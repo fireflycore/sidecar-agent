@@ -1,0 +1,57 @@
+services:
+  consul-server-1:
+    image: consul:1.15
+    command: >
+      agent -server
+      -bootstrap-expect=3
+      -node=server-1
+      -bind=0.0.0.0
+      -client=0.0.0.0
+      -datacenter=cluster-a
+      -data-dir=/consul/data
+      -retry-join=consul-server-2
+      -retry-join=consul-server-3
+    volumes:
+      # 第一个 Consul Server 的本地数据目录。
+      - consul-data-1:/consul/data
+    ports:
+      # 暴露 HTTP API，便于本地验证集群状态与服务注册。
+      - "8500:8500"
+
+  consul-server-2:
+    image: consul:1.15
+    command: >
+      agent -server
+      -bootstrap-expect=3
+      -node=server-2
+      -bind=0.0.0.0
+      -client=0.0.0.0
+      -datacenter=cluster-a
+      -data-dir=/consul/data
+      -retry-join=consul-server-1
+      -retry-join=consul-server-3
+    volumes:
+      # 第二个 Consul Server 的本地数据目录。
+      - consul-data-2:/consul/data
+
+  consul-server-3:
+    image: consul:1.15
+    command: >
+      agent -server
+      -bootstrap-expect=3
+      -node=server-3
+      -bind=0.0.0.0
+      -client=0.0.0.0
+      -datacenter=cluster-a
+      -data-dir=/consul/data
+      -retry-join=consul-server-1
+      -retry-join=consul-server-2
+    volumes:
+      # 第三个 Consul Server 的本地数据目录。
+      - consul-data-3:/consul/data
+
+volumes:
+  # 每个节点使用独立卷，避免数据目录互相污染。
+  consul-data-1:
+  consul-data-2:
+  consul-data-3:

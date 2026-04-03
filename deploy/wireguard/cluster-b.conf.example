@@ -1,0 +1,17 @@
+[Interface]
+# 集群 B 的 WireGuard 本地地址。
+Address = 10.200.0.2/24
+# 集群 B 的 UDP 监听端口。
+ListenPort = 51820
+# 集群 B 的私钥，实际部署时替换为真实值。
+PrivateKey = REPLACE_WITH_CLUSTER_B_PRIVATE_KEY
+
+[Peer]
+# 集群 A 的公钥，实际部署时替换为真实值。
+PublicKey = REPLACE_WITH_CLUSTER_A_PUBLIC_KEY
+# 集群 A 所在网络以及集群 A 的 WireGuard 地址段。
+AllowedIPs = 10.200.0.1/32, 192.168.10.0/24
+# 集群 A 的公网或专线入口地址。
+Endpoint = cluster-a.example.com:51820
+# 保持 NAT 映射，避免长时间空闲后隧道失效。
+PersistentKeepalive = 25
