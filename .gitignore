@@ -1,0 +1,6 @@
+.idea/*
+.vscode/*
+.log/*
+.gen/*
+
+.DS_Store
