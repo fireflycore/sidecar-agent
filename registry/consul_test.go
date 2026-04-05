@@ -1,116 +1,178 @@
 package registry
 
 import (
-	"errors"
+	"context"
 	"testing"
 
+	"github.com/fireflycore/sidecar-agent/model"
 	"github.com/hashicorp/consul/api"
 )
 
-type fakeHealthService struct {
-	entries []*api.ServiceEntry
-	err     error
+// fakeAgentAPI 提供最小的 agent 接口桩实现。
+type fakeAgentAPI struct {
+	// registered 保存最后一次注册请求。
+	registeredID string
+	// deregistered 保存最后一次注销实例 ID。
+	deregistered string
+	// maintenance 保存最后一次维护模式实例 ID。
+	maintenance string
 }
 
-func (f *fakeHealthService) Service(service, tag string, passingOnly bool, q *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
-	return f.entries, nil, f.err
+// ServiceRegister 记录注册调用。
+func (f *fakeAgentAPI) ServiceRegister(service *api.AgentServiceRegistration) error {
+	// 记录注册实例 ID。
+	f.registeredID = service.ID
+	// 返回成功结果。
+	return nil
 }
 
-type fakeAgentService struct {
-	registration *api.AgentServiceRegistration
-	err          error
+// ServiceDeregister 记录注销调用。
+func (f *fakeAgentAPI) ServiceDeregister(serviceID string) error {
+	// 记录注销实例 ID。
+	f.deregistered = serviceID
+	// 返回成功结果。
+	return nil
 }
 
-func (f *fakeAgentService) ServiceRegister(service *api.AgentServiceRegistration) error {
-	f.registration = service
-	return f.err
+// EnableServiceMaintenance 记录维护模式调用。
+func (f *fakeAgentAPI) EnableServiceMaintenance(serviceID, _ string) error {
+	// 记录维护模式实例 ID。
+	f.maintenance = serviceID
+	// 返回成功结果。
+	return nil
 }
 
-func TestConsulRegistryResolvePrefersLocalCluster(t *testing.T) {
-	// 当本集群和远端集群都有实例时，必须优先只返回本集群实例。
-	registry := &ConsulRegistry{
-		health: &fakeHealthService{
-			entries: []*api.ServiceEntry{
-				newServiceEntry("10.0.0.1", 8080, []string{"cluster=cluster-a"}),
-				newServiceEntry("10.0.0.2", 8080, []string{"cluster=cluster-b"}),
-			},
+// fakeHealthAPI 提供最小健康查询桩。
+type fakeHealthAPI struct{}
+
+// Service 返回空实例集合。
+func (f *fakeHealthAPI) Service(service, tag string, passingOnly bool, q *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
+	// 当前测试不依赖 Discover。
+	return nil, nil, nil
+}
+
+// fakeCatalogAPI 提供最小 catalog 桩。
+type fakeCatalogAPI struct{}
+
+// Services 返回空服务集。
+func (f *fakeCatalogAPI) Services(q *api.QueryOptions) (map[string][]string, *api.QueryMeta, error) {
+	// 当前测试不依赖 Discover。
+	return map[string][]string{}, nil, nil
+}
+
+// fakeKVAPI 提供最小 KV 桩。
+type fakeKVAPI struct {
+	// value 保存当前 key 的路由文档。
+	value map[string][]byte
+}
+
+// Get 返回当前 key 的值。
+func (f *fakeKVAPI) Get(key string, q *api.QueryOptions) (*api.KVPair, *api.QueryMeta, error) {
+	// 若还没有初始化 map，则视为空。
+	if f.value == nil {
+		return nil, nil, nil
+	}
+	// 未命中时返回 nil。
+	if _, ok := f.value[key]; !ok {
+		return nil, nil, nil
+	}
+	// 返回命中的 KV 内容。
+	return &api.KVPair{
+		Key:   key,
+		Value: f.value[key],
+	}, nil, nil
+}
+
+// Put 写入当前 key 的值。
+func (f *fakeKVAPI) Put(pair *api.KVPair, q *api.WriteOptions) (*api.WriteMeta, error) {
+	// 惰性初始化内部 map。
+	if f.value == nil {
+		f.value = make(map[string][]byte)
+	}
+	// 保存写入值。
+	f.value[pair.Key] = pair.Value
+	// 返回成功结果。
+	return nil, nil
+}
+
+// TestRegisterDrainAndDeregister 验证本地生命周期闭环。
+func TestRegisterDrainAndDeregister(t *testing.T) {
+	// 创建最小 fake 依赖。
+	agent := &fakeAgentAPI{}
+	kv := &fakeKVAPI{}
+	// 创建 registry 客户端。
+	client := NewWithClient(Settings{
+		RouteKVPrefix: "routes",
+		ClusterName:   "cluster-a",
+		Zone:          "idc-a-1",
+		HostIP:        "127.0.0.1",
+		Env:           "prod",
+	}, nil, agent, &fakeHealthAPI{}, &fakeCatalogAPI{}, kv)
+	// 构造一份合法注册请求。
+	service, err := client.Register(context.Background(), model.RegisterRequest{
+		AppID:     "10001",
+		AppName:   "auth-center",
+		Name:      "auth",
+		Namespace: "default",
+		Port:      9090,
+		DNS:       "auth.default.svc.cluster.local",
+		Env:       "prod",
+		Weight:    100,
+		Protocol:  "grpc",
+		Kernel: model.KernelInfo{
+			Language: "go",
+			Version:  "go-micro/v1.12.0",
 		},
-		clusterName: "cluster-a",
-	}
-
-	instances, err := registry.Resolve("auth")
-	if err != nil {
-		t.Fatalf("resolve failed: %v", err)
-	}
-	if len(instances) != 1 || instances[0] != "10.0.0.1:8080" {
-		t.Fatalf("expected local instance only, got %#v", instances)
-	}
-}
-
-func TestConsulRegistryResolveFallsBackToRemote(t *testing.T) {
-	// 当本集群没有实例时，允许溢出到其他集群。
-	registry := &ConsulRegistry{
-		health: &fakeHealthService{
-			entries: []*api.ServiceEntry{
-				newServiceEntry("10.0.1.2", 9090, []string{"cluster=cluster-b"}),
-			},
+		Methods: []string{
+			"/acme.auth.v1.AuthService/Login",
 		},
-		clusterName: "cluster-a",
-	}
-
-	instances, err := registry.Resolve("auth")
+		Version: "v1.3.4",
+	})
+	// 注册必须成功。
 	if err != nil {
-		t.Fatalf("resolve failed: %v", err)
-	}
-	if len(instances) != 1 || instances[0] != "10.0.1.2:9090" {
-		t.Fatalf("expected remote fallback instance, got %#v", instances)
-	}
-}
-
-func TestConsulRegistryRegister(t *testing.T) {
-	// 注册时必须带上 cluster 标签和 gRPC 健康检查配置。
-	agent := &fakeAgentService{}
-	registry := &ConsulRegistry{
-		agent:       agent,
-		clusterName: "cluster-a",
-	}
-
-	if err := registry.Register("auth-1", "auth", "127.0.0.1", 8080); err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
-	if agent.registration == nil {
-		t.Fatal("expected registration to be captured")
+	// 注册后应进入 Serving。
+	if got, want := service.State, model.StateServing; got != want {
+		t.Fatalf("unexpected state after register: got=%s want=%s", got, want)
 	}
-	if len(agent.registration.Tags) != 1 || agent.registration.Tags[0] != "cluster=cluster-a" {
-		t.Fatalf("unexpected tags: %#v", agent.registration.Tags)
+	// 路由文档应已写入 KV。
+	if _, ok := kv.value["routes/prod/default/auth/current"]; !ok {
+		t.Fatal("expected route document to be written")
 	}
-	if got := agent.registration.Check.GRPC; got != "127.0.0.1:8080" {
-		t.Fatalf("unexpected grpc check: %s", got)
+	// 执行摘流。
+	drained, err := client.Drain(model.DrainRequest{
+		Name:           "auth",
+		Port:           9090,
+		GracePeriodRaw: "20s",
+	})
+	// 摘流必须成功。
+	if err != nil {
+		t.Fatalf("drain failed: %v", err)
 	}
-}
-
-func TestConsulRegistryResolveNoInstances(t *testing.T) {
-	// 没有健康实例时要给出明确错误，便于上层决定如何处理。
-	registry := &ConsulRegistry{
-		health:      &fakeHealthService{},
-		clusterName: "cluster-a",
+	// 摘流后状态应切到 Draining。
+	if got, want := drained.State, model.StateDraining; got != want {
+		t.Fatalf("unexpected state after drain: got=%s want=%s", got, want)
 	}
-
-	_, err := registry.Resolve("auth")
-	if !errors.Is(err, ErrNoInstances) {
-		t.Fatalf("expected ErrNoInstances, got %v", err)
+	// agent 维护模式应命中同一个实例 ID。
+	if got, want := agent.maintenance, service.InstanceID; got != want {
+		t.Fatalf("unexpected maintenance instance: got=%s want=%s", got, want)
 	}
-}
-
-func newServiceEntry(address string, port int, tags []string) *api.ServiceEntry {
-	return &api.ServiceEntry{
-		Node: &api.Node{
-			Address: address,
-		},
-		Service: &api.AgentService{
-			Address: address,
-			Port:    port,
-			Tags:    tags,
-		},
+	// 执行强制注销。
+	deregistered, err := client.Deregister(model.DeregisterRequest{
+		Name: "auth",
+		Port: 9090,
+	})
+	// 注销必须成功。
+	if err != nil {
+		t.Fatalf("deregister failed: %v", err)
+	}
+	// 注销后状态应切到 Deregistered。
+	if got, want := deregistered.State, model.StateDeregistered; got != want {
+		t.Fatalf("unexpected state after deregister: got=%s want=%s", got, want)
+	}
+	// 注销动作应落到同一个实例 ID。
+	if got, want := agent.deregistered, service.InstanceID; got != want {
+		t.Fatalf("unexpected deregister instance: got=%s want=%s", got, want)
 	}
 }
