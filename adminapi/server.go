@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -67,6 +68,7 @@ func New(listenAddress string, registry Registry, refresher Refresher, xdsServer
 	mux.HandleFunc("POST /drain", server.handleDrain)
 	mux.HandleFunc("POST /deregister", server.handleDeregister)
 	mux.HandleFunc("GET /healthz", server.handleHealthz)
+	mux.HandleFunc("GET /watch", server.handleWatch)
 	// 调试接口固定暴露，便于本地联调与运维排障。
 	mux.HandleFunc("GET /debug/services", server.handleDebugServices)
 	mux.HandleFunc("GET /debug/xds", server.handleDebugXDS)
@@ -229,6 +231,36 @@ func (s *Server) handleHealthz(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]string{
 		"status": "ok",
 	})
+}
+
+// handleWatch 提供一个最小的长连接事件流，用于业务侧感知 agent 连接恢复。
+func (s *Server) handleWatch(writer http.ResponseWriter, request *http.Request) {
+	// 仅支持支持刷新的 ResponseWriter，避免在不支持流式输出的实现上挂起。
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		writeError(writer, http.StatusInternalServerError, errors.New("streaming is not supported"))
+		return
+	}
+	// 输出 SSE 响应头，便于客户端在本地长连接恢复后重放注册。
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("Connection", "keep-alive")
+	// 建立连接后先发送一个 connected 事件，让客户端立即执行首轮注册。
+	_, _ = writer.Write([]byte("event: connected\n"))
+	_, _ = writer.Write([]byte("data: ok\n\n"))
+	flusher.Flush()
+	// 使用固定 ticker 输出 heartbeat，既保持连接活跃，也让客户端可借 EOF 感知断连。
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case <-ticker.C:
+			_, _ = writer.Write([]byte(": heartbeat\n\n"))
+			flusher.Flush()
+		}
+	}
 }
 
 // handleDebugServices 返回当前宿主机已知服务状态。

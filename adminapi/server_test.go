@@ -3,10 +3,12 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fireflycore/sidecar-agent/model"
 )
@@ -138,5 +140,37 @@ func TestDebugServicesEndpoint(t *testing.T) {
 	}
 	if got, want := len(services), 1; got != want {
 		t.Fatalf("unexpected service count: got=%d want=%d", got, want)
+	}
+}
+
+// TestWatchEndpoint 验证 /watch 会立即返回 connected 事件。
+func TestWatchEndpoint(t *testing.T) {
+	// 创建一个最小 server，并用真实路由处理 watch 请求。
+	server := New("127.0.0.1:0", &fakeRegistry{}, nil, nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, "/watch", nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	// 通过 goroutine 调用真实路由，便于测试侧主动取消长连接。
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.httpServer.Handler.ServeHTTP(recorder, request)
+	}()
+	// 给处理器一点时间写出首条 connected 事件后再主动结束请求。
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+	// /watch 应返回成功状态码。
+	if got, want := recorder.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected status code: got=%d want=%d", got, want)
+	}
+	// 响应体中应至少包含第一条 connected 事件。
+	body, err := io.ReadAll(recorder.Body)
+	if err != nil {
+		t.Fatalf("read body failed: %v", err)
+	}
+	if !strings.Contains(string(body), "event: connected") {
+		t.Fatalf("unexpected watch body: %s", string(body))
 	}
 }

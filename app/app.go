@@ -63,14 +63,17 @@ func New(cfg config.Config) (*Runner, error) {
 	dnsServer := dns.New(cfg.DNS.UpstreamDNS)
 	// 创建 Consul 注册中心客户端。
 	registryClient, err := registry.New(registry.Settings{
-		Address:       cfg.Consul.Address,
-		Scheme:        cfg.Consul.Scheme,
-		Datacenter:    cfg.Consul.Datacenter,
-		RouteKVPrefix: cfg.Consul.RouteKVPrefix,
-		ClusterName:   cfg.ClusterName,
-		Zone:          cfg.Zone,
-		HostIP:        cfg.HostIP,
-		Env:           cfg.Env,
+		Address:                        cfg.Consul.Address,
+		Scheme:                         cfg.Consul.Scheme,
+		Datacenter:                     cfg.Consul.Datacenter,
+		RouteKVPrefix:                  cfg.Consul.RouteKVPrefix,
+		ClusterName:                    cfg.ClusterName,
+		Zone:                           cfg.Zone,
+		HostIP:                         cfg.HostIP,
+		Env:                            cfg.Env,
+		AgentLeaseTTL:                  config.MustDuration(cfg.Consul.AgentLeaseTTL),
+		AgentLeaseRefreshInterval:      config.MustDuration(cfg.Consul.AgentLeaseRefreshInterval),
+		DeregisterCriticalServiceAfter: config.MustDuration(cfg.Consul.DeregisterCriticalServiceAfter),
 	}, logger, metrics)
 	if err != nil {
 		return nil, err
@@ -156,6 +159,10 @@ func New(cfg config.Config) (*Runner, error) {
 
 // Start 启动 sidecar-agent 的所有模块。
 func (r *Runner) Start(ctx context.Context) error {
+	// 先启动 registry 的 lease 续租与旧轮次清理，确保后续注册具备正确归属语义。
+	if err := r.registryClient.Start(ctx); err != nil {
+		return err
+	}
 	// 先启动 xDS，确保 Envoy 拉起前控制面已就绪。
 	if err := r.xdsServer.Start(r.cfg.XDS.ListenAddress); err != nil {
 		return err
@@ -211,6 +218,12 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 	// 优先停止管理接口，避免关闭过程中再接新请求。
 	if r.adminServer != nil {
 		if err := r.adminServer.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+	// 先主动摘除本机所有实例，确保 agent 正常退出时注册立即失效。
+	if r.registryClient != nil {
+		if err := r.registryClient.Shutdown(ctx); err != nil {
 			return err
 		}
 	}

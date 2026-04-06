@@ -244,6 +244,10 @@ type LocalService struct {
 	Request RegisterRequest `json:"request"`
 	// InstanceID 表示 agent 统一生成的实例标识。
 	InstanceID string `json:"instance_id"`
+	// AgentID 表示当前接管该实例的逻辑 agent 身份。
+	AgentID string `json:"agent_id"`
+	// AgentRunID 表示当前接管该实例的 agent 启动轮次。
+	AgentRunID string `json:"agent_run_id"`
 	// Address 表示写入 Consul 的实例地址。
 	Address string `json:"address"`
 	// Zone 表示 agent 自动注入的机房或可用区。
@@ -252,6 +256,8 @@ type LocalService struct {
 	RoutePrefixes []string `json:"route_prefixes"`
 	// RouteConfigRef 表示完整路由文档引用。
 	RouteConfigRef string `json:"route_config_ref"`
+	// LeaseCheckID 表示 agent 自身 TTL ownership 检查 ID。
+	LeaseCheckID string `json:"lease_check_id"`
 	// State 表示当前生命周期状态。
 	State ServiceState `json:"state"`
 	// RegisteredAt 表示首次注册时间。

@@ -38,6 +38,12 @@ type Settings struct {
 	HostIP string
 	// Env 表示当前 agent 所属环境。
 	Env string
+	// AgentLeaseTTL 表示 agent ownership TTL 的总有效时间。
+	AgentLeaseTTL time.Duration
+	// AgentLeaseRefreshInterval 表示 agent ownership TTL 的续约间隔。
+	AgentLeaseRefreshInterval time.Duration
+	// DeregisterCriticalServiceAfter 表示 ownership TTL critical 后的自动注销等待时间。
+	DeregisterCriticalServiceAfter time.Duration
 }
 
 // agentAPI 抽象 Consul agent 服务注册能力，便于单元测试替换。
@@ -48,6 +54,8 @@ type agentAPI interface {
 	ServiceDeregister(serviceID string) error
 	// EnableServiceMaintenance 负责把实例切到维护模式，避免继续接收流量。
 	EnableServiceMaintenance(serviceID, reason string) error
+	// UpdateTTL 负责刷新 agent ownership TTL，表明当前实例仍被本轮 agent 接管。
+	UpdateTTL(checkID, output, status string) error
 }
 
 // healthAPI 抽象 Consul 健康查询能力。
@@ -86,6 +94,16 @@ type Client struct {
 	logger *slog.Logger
 	// metrics 负责累计本地生命周期指标。
 	metrics metricsRecorder
+	// agentID 表示当前宿主机上的稳定 agent 身份。
+	agentID string
+	// agentRunID 表示当前 agent 这一轮启动的唯一身份。
+	agentRunID string
+	// startedAt 表示当前 agent 的启动时间。
+	startedAt time.Time
+	// lifecycleCancel 用于停止 ownership 续约循环。
+	lifecycleCancel context.CancelFunc
+	// lifecycleWG 等待后台续约协程退出。
+	lifecycleWG sync.WaitGroup
 	// mu 保护本机服务状态。
 	mu sync.RWMutex
 	// localServices 保存本机已知服务实例。
@@ -124,6 +142,12 @@ func New(settings Settings, logger *slog.Logger, metrics metricsRecorder) (*Clie
 
 // NewWithClient 允许在测试中注入假的 Consul 接口。
 func NewWithClient(settings Settings, logger *slog.Logger, metrics metricsRecorder, agent agentAPI, health healthAPI, catalog catalogAPI, kv kvAPI) *Client {
+	// 为当前 agent 生成一次运行周期唯一 ID。
+	agentRunID, err := newInstanceID()
+	if err != nil {
+		// 极端情况下若随机源失败，则退回时间戳可读值，避免初始化直接崩溃。
+		agentRunID = fmt.Sprintf("fallback-%d", time.Now().UTC().UnixNano())
+	}
 	// 返回一个可直接使用的 registry 客户端。
 	return &Client{
 		settings:      settings,
@@ -133,8 +157,167 @@ func NewWithClient(settings Settings, logger *slog.Logger, metrics metricsRecord
 		kv:            kv,
 		logger:        logger,
 		metrics:       metrics,
+		agentID:       buildAgentID(settings),
+		agentRunID:    agentRunID,
+		startedAt:     time.Now().UTC(),
 		localServices: make(map[string]model.LocalService),
 	}
+}
+
+// Start 启动 registry 的 ownership 续租循环，并清理当前 agent 的旧轮次残留。
+func (c *Client) Start(ctx context.Context) error {
+	// 先做最小可用性校验，避免后台协程带着空接口启动。
+	if err := c.EnsureUsable(); err != nil {
+		return err
+	}
+	// 先清理属于当前 agent 但不属于当前轮次的旧实例，避免新旧注册并存。
+	if err := c.cleanupPreviousRuns(ctx); err != nil {
+		return err
+	}
+	// 若已启动过，则无需重复启动后台续租循环。
+	if c.lifecycleCancel != nil {
+		return nil
+	}
+	// 为续租循环创建独立上下文，便于 Shutdown 时统一停止。
+	leaseCtx, cancel := context.WithCancel(context.Background())
+	c.lifecycleCancel = cancel
+	// 启动后台续租循环，持续把当前 agent 接管关系续成 passing。
+	c.lifecycleWG.Add(1)
+	go func() {
+		defer c.lifecycleWG.Done()
+		c.leaseLoop(leaseCtx)
+	}()
+	// 启动成功后返回。
+	return nil
+}
+
+// Shutdown 主动摘除当前 agent 名下的所有本机服务，并停止后台续租。
+func (c *Client) Shutdown(ctx context.Context) error {
+	// 若后台续租已启动，则先停止它，避免与注销并发冲突。
+	if c.lifecycleCancel != nil {
+		c.lifecycleCancel()
+		c.lifecycleWG.Wait()
+		c.lifecycleCancel = nil
+	}
+	// 抓取一份当前仍处于接管状态的本机实例快照。
+	services := c.activeLocalServices()
+	// 逐个实例执行主动注销，确保 agent 正常退出时服务立即从 Consul 消失。
+	for _, service := range services {
+		if err := c.agent.ServiceDeregister(service.InstanceID); err != nil {
+			return err
+		}
+		service.State = model.StateDeregistered
+		service.UpdatedAt = time.Now().UTC()
+		c.storeLocalService(service)
+	}
+	// 退出清理完成。
+	return nil
+}
+
+// localService 读取当前本机某个服务的最近状态。
+func (c *Client) localService(name string, port int) (model.LocalService, bool) {
+	// 读取本机状态时使用读锁，避免阻塞心跳续租。
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	service, ok := c.localServices[c.localKey(name, port)]
+	return service, ok
+}
+
+// storeLocalService 把本机服务状态安全写回内存。
+func (c *Client) storeLocalService(service model.LocalService) {
+	// 更新本机状态时使用写锁，保证多协程下 map 安全。
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.localServices[c.localKey(service.Request.Name, service.Request.Port)] = service
+}
+
+// activeLocalServices 返回当前仍由本轮 agent 接管的本机实例快照。
+func (c *Client) activeLocalServices() []model.LocalService {
+	// 读取阶段使用读锁，避免和注册热路径互相阻塞。
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	services := make([]model.LocalService, 0, len(c.localServices))
+	for _, service := range c.localServices {
+		// 只有未注销的实例才需要参与 TTL 续租与退出摘除。
+		if service.State == model.StateDeregistered {
+			continue
+		}
+		services = append(services, service)
+	}
+	return services
+}
+
+// passLease 把某个实例的 agent ownership TTL 刷成 passing。
+func (c *Client) passLease(service model.LocalService) error {
+	// 通过 TTL passing 声明“该实例仍由当前 agent 接管”。
+	return c.agent.UpdateTTL(service.LeaseCheckID, "agent ownership is healthy", api.HealthPassing)
+}
+
+// leaseLoop 周期性刷新当前 agent 名下所有实例的 ownership TTL。
+func (c *Client) leaseLoop(ctx context.Context) {
+	// 使用固定 ticker 驱动续租，保持实现简单且可预测。
+	ticker := time.NewTicker(c.settings.AgentLeaseRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			services := c.activeLocalServices()
+			for _, service := range services {
+				if err := c.passLease(service); err != nil && c.logger != nil {
+					c.logger.Warn("service lease refresh failed",
+						slog.String("service", service.Request.Name),
+						slog.String("instance_id", service.InstanceID),
+						slog.String("lease_check_id", service.LeaseCheckID),
+						slog.String("error", err.Error()),
+					)
+				}
+			}
+		}
+	}
+}
+
+// cleanupPreviousRuns 清理属于当前 agent_id 但来自旧轮次的注册残留。
+func (c *Client) cleanupPreviousRuns(ctx context.Context) error {
+	// 先读取当前 catalog 中的服务索引，再逐个查询所有实例。
+	services, _, err := c.catalog.Services(&api.QueryOptions{AllowStale: true})
+	if err != nil {
+		return err
+	}
+	for serviceName := range services {
+		// 这里故意不过滤 passingOnly，确保连旧轮次的 critical 实例也能看到。
+		entries, _, err := c.health.Service(serviceName, "", false, &api.QueryOptions{AllowStale: true})
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry == nil || entry.Service == nil {
+				continue
+			}
+			meta := entry.Service.Meta
+			// 仅清理属于当前宿主机逻辑 agent 的旧轮次实例。
+			if strings.TrimSpace(meta["agent_id"]) != c.agentID {
+				continue
+			}
+			// 当前轮次实例不应被误删。
+			if strings.TrimSpace(meta["agent_run_id"]) == c.agentRunID {
+				continue
+			}
+			if err := c.agent.ServiceDeregister(entry.Service.ID); err != nil {
+				return err
+			}
+			if c.logger != nil {
+				c.logger.Info("stale service deregistered",
+					slog.String("service", entry.Service.Service),
+					slog.String("instance_id", entry.Service.ID),
+					slog.String("agent_id", c.agentID),
+					slog.String("old_agent_run_id", meta["agent_run_id"]),
+				)
+			}
+		}
+	}
+	return nil
 }
 
 // Register 处理本地业务服务的注册请求。
@@ -152,6 +335,31 @@ func (c *Client) Register(ctx context.Context, request model.RegisterRequest) (m
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
+	}
+	// 若当前 agent 已经接管过同名同端口服务，则优先复用当前实例，避免重复注册。
+	if existing, ok := c.localService(request.Name, request.Port); ok && existing.State != model.StateDeregistered {
+		// 当注册内容未发生变化时，只刷新 lease 并直接返回已有状态。
+		if sameRegisterRequest(existing.Request, request) {
+			if err := c.passLease(existing); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return model.LocalService{}, err
+			}
+			existing.UpdatedAt = time.Now().UTC()
+			c.storeLocalService(existing)
+			span.SetAttributes(attribute.String("instance.id", existing.InstanceID))
+			span.SetStatus(codes.Ok, "replayed")
+			return existing, nil
+		}
+		// 当注册语义发生变化时，先清掉旧实例，再按新请求重建注册。
+		if err := c.agent.ServiceDeregister(existing.InstanceID); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return model.LocalService{}, err
+		}
+		existing.State = model.StateDeregistered
+		existing.UpdatedAt = time.Now().UTC()
+		c.storeLocalService(existing)
 	}
 	// 为完整方法列表提取稳定路由前缀。
 	routePrefixes := model.ExtractRoutePrefixes(request.Methods)
@@ -186,10 +394,13 @@ func (c *Client) Register(ctx context.Context, request model.RegisterRequest) (m
 	service := model.LocalService{
 		Request:        request,
 		InstanceID:     instanceID,
+		AgentID:        c.agentID,
+		AgentRunID:     c.agentRunID,
 		Address:        strings.TrimSpace(c.settings.HostIP),
 		Zone:           strings.TrimSpace(c.settings.Zone),
 		RoutePrefixes:  routePrefixes,
 		RouteConfigRef: routeConfigRef,
+		LeaseCheckID:   leaseCheckIDFor(instanceID),
 		State:          model.StateRegistered,
 		RegisteredAt:   now,
 		UpdatedAt:      now,
@@ -200,14 +411,18 @@ func (c *Client) Register(ctx context.Context, request model.RegisterRequest) (m
 		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
+	// 注册成功后立即把 ownership TTL 刷为 passing，声明本轮 agent 已接管该实例。
+	if err := c.passLease(service); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return model.LocalService{}, err
+	}
 	// 注册完成后切换到 Serving。
 	service.State = model.StateServing
 	// 更新时间戳，便于调试观察状态变化。
 	service.UpdatedAt = time.Now().UTC()
 	// 把本机实例写入内存状态。
-	c.mu.Lock()
-	c.localServices[c.localKey(service.Request.Name, service.Request.Port)] = service
-	c.mu.Unlock()
+	c.storeLocalService(service)
 	// 记录结构化日志，方便联调。
 	if c.logger != nil {
 		c.logger.Info("service registered",
@@ -487,6 +702,10 @@ func (c *Client) registrationFor(service model.LocalService) *api.AgentServiceRe
 	meta := map[string]string{
 		"app_id":           service.Request.AppID,
 		"app_name":         service.Request.AppName,
+		"agent_id":         service.AgentID,
+		"agent_run_id":     service.AgentRunID,
+		"agent_host_ip":    service.Address,
+		"agent_started_at": c.startedAt.Format(time.RFC3339),
 		"namespace":        service.Request.Namespace,
 		"dns":              service.Request.DNS,
 		"env":              service.Request.Env,
@@ -511,13 +730,20 @@ func (c *Client) registrationFor(service model.LocalService) *api.AgentServiceRe
 			"cluster=" + strings.TrimSpace(c.settings.ClusterName),
 		},
 		Meta: meta,
-		Check: &api.AgentServiceCheck{
-			// 当前阶段使用 TCP 检查，避免强依赖业务服务接入 gRPC health。
-			TCP: fmt.Sprintf("%s:%d", service.Address, service.Request.Port),
-			// 健康检查间隔对齐最小骨架需求。
-			Interval: "10s",
-			// 失败后 30 秒自动注销，避免僵尸实例长期残留。
-			DeregisterCriticalServiceAfter: "30s",
+		Checks: api.AgentServiceChecks{
+			// 第一条检查负责声明业务进程本身是否仍然存活。
+			&api.AgentServiceCheck{
+				CheckID:                        "service:" + service.InstanceID + ":tcp",
+				TCP:                            fmt.Sprintf("%s:%d", service.Address, service.Request.Port),
+				Interval:                       "10s",
+				DeregisterCriticalServiceAfter: c.settings.DeregisterCriticalServiceAfter.String(),
+			},
+			// 第二条检查负责声明当前实例是否仍被本轮 agent 接管。
+			&api.AgentServiceCheck{
+				CheckID:                        service.LeaseCheckID,
+				TTL:                            c.settings.AgentLeaseTTL.String(),
+				DeregisterCriticalServiceAfter: c.settings.DeregisterCriticalServiceAfter.String(),
+			},
 		},
 	}
 }
@@ -611,6 +837,45 @@ func newInstanceID() (string, error) {
 	encoded := hex.EncodeToString(buffer[:])
 	// 按 8-4-4-4-12 规则拼装输出。
 	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[0:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:32]), nil
+}
+
+// buildAgentID 生成当前宿主机逻辑 agent 的稳定身份。
+func buildAgentID(settings Settings) string {
+	// 使用 cluster、zone、host_ip 组合，避免同 zone 多主机之间互相误删。
+	return fmt.Sprintf("%s:%s:%s",
+		strings.TrimSpace(settings.ClusterName),
+		strings.TrimSpace(settings.Zone),
+		strings.TrimSpace(settings.HostIP),
+	)
+}
+
+// leaseCheckIDFor 生成某个实例的 ownership TTL 检查 ID。
+func leaseCheckIDFor(instanceID string) string {
+	// 显式 check id 能避免依赖 Consul 的隐式命名规则。
+	return "service:" + strings.TrimSpace(instanceID) + ":agent-lease"
+}
+
+// sameRegisterRequest 判断两次注册请求是否表达同一份服务语义。
+func sameRegisterRequest(left, right model.RegisterRequest) bool {
+	// 先比较所有标量字段，快速过滤显著差异。
+	if left.AppID != right.AppID ||
+		left.AppName != right.AppName ||
+		left.Name != right.Name ||
+		left.Namespace != right.Namespace ||
+		left.Port != right.Port ||
+		left.DNS != right.DNS ||
+		left.Env != right.Env ||
+		left.Weight != right.Weight ||
+		left.Protocol != right.Protocol ||
+		left.Kernel.Language != right.Kernel.Language ||
+		left.Kernel.Version != right.Kernel.Version ||
+		left.Version != right.Version {
+		return false
+	}
+	// 方法列表经过排序后再比对，避免顺序差异导致误判。
+	leftMethods := model.UniqueSortedStrings(left.Methods)
+	rightMethods := model.UniqueSortedStrings(right.Methods)
+	return slices.Equal(leftMethods, rightMethods)
 }
 
 // EnsureUsable 校验 registry 当前装配是否完整。

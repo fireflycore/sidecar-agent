@@ -70,6 +70,12 @@ type ConsulConfig struct {
 	Datacenter string `yaml:"datacenter"`
 	// RouteKVPrefix 表示完整路由文档写入前缀。
 	RouteKVPrefix string `yaml:"route_kv_prefix"`
+	// AgentLeaseTTL 表示 agent ownership TTL 的过期时间。
+	AgentLeaseTTL string `yaml:"agent_lease_ttl"`
+	// AgentLeaseRefreshInterval 表示 agent ownership 的续约间隔。
+	AgentLeaseRefreshInterval string `yaml:"agent_lease_refresh_interval"`
+	// DeregisterCriticalServiceAfter 表示 TTL critical 后自动注销等待时间。
+	DeregisterCriticalServiceAfter string `yaml:"deregister_critical_service_after"`
 }
 
 // XDSConfig 描述 xDS 监听与治理默认值。
@@ -171,6 +177,12 @@ func Default() Config {
 			Datacenter: "dc1",
 			// 路由文档前缀严格使用 routes。
 			RouteKVPrefix: "routes",
+			// agent ownership 默认 10 秒过期，兼顾快速摘除与抖动容忍。
+			AgentLeaseTTL: "10s",
+			// 续约间隔默认 3 秒，确保在 TTL 过期前至少续租多次。
+			AgentLeaseRefreshInterval: "3s",
+			// TTL 进入 critical 30 秒后自动从 Consul 清理实例。
+			DeregisterCriticalServiceAfter: "30s",
 		},
 		XDS: XDSConfig{
 			// xDS 按文档监听 15011。
@@ -304,15 +316,18 @@ func (c Config) Validate() error {
 	}
 	// 关键字符串字段需要非空。
 	requiredStrings := map[string]string{
-		"consul.scheme":         c.Consul.Scheme,
-		"consul.datacenter":     c.Consul.Datacenter,
-		"xds.node_id":           c.XDS.NodeID,
-		"xds.route_name":        c.XDS.RouteName,
-		"xds.default_timeout":   c.XDS.DefaultTimeout,
-		"xds.per_try_timeout":   c.XDS.PerTryTimeout,
-		"envoy.drain_timeout":   c.Envoy.DrainTimeout,
-		"envoy.restart_backoff": c.Envoy.RestartBackoff,
-		"envoy.log_level":       c.Envoy.LogLevel,
+		"consul.scheme":                            c.Consul.Scheme,
+		"consul.datacenter":                        c.Consul.Datacenter,
+		"consul.agent_lease_ttl":                   c.Consul.AgentLeaseTTL,
+		"consul.agent_lease_refresh_interval":      c.Consul.AgentLeaseRefreshInterval,
+		"consul.deregister_critical_service_after": c.Consul.DeregisterCriticalServiceAfter,
+		"xds.node_id":                              c.XDS.NodeID,
+		"xds.route_name":                           c.XDS.RouteName,
+		"xds.default_timeout":                      c.XDS.DefaultTimeout,
+		"xds.per_try_timeout":                      c.XDS.PerTryTimeout,
+		"envoy.drain_timeout":                      c.Envoy.DrainTimeout,
+		"envoy.restart_backoff":                    c.Envoy.RestartBackoff,
+		"envoy.log_level":                          c.Envoy.LogLevel,
 	}
 	// 逐项校验必填字符串。
 	for field, value := range requiredStrings {
@@ -322,19 +337,26 @@ func (c Config) Validate() error {
 	}
 	// 轮询与治理类时长必须可解析。
 	durations := map[string]string{
-		"discovery.refresh_interval":  c.Discovery.RefreshInterval,
-		"discovery.debounce_interval": c.Discovery.DebounceInterval,
-		"xds.default_timeout":         c.XDS.DefaultTimeout,
-		"xds.per_try_timeout":         c.XDS.PerTryTimeout,
-		"xds.base_ejection_time":      c.XDS.BaseEjectionTime,
-		"envoy.drain_timeout":         c.Envoy.DrainTimeout,
-		"envoy.restart_backoff":       c.Envoy.RestartBackoff,
+		"discovery.refresh_interval":               c.Discovery.RefreshInterval,
+		"discovery.debounce_interval":              c.Discovery.DebounceInterval,
+		"consul.agent_lease_ttl":                   c.Consul.AgentLeaseTTL,
+		"consul.agent_lease_refresh_interval":      c.Consul.AgentLeaseRefreshInterval,
+		"consul.deregister_critical_service_after": c.Consul.DeregisterCriticalServiceAfter,
+		"xds.default_timeout":                      c.XDS.DefaultTimeout,
+		"xds.per_try_timeout":                      c.XDS.PerTryTimeout,
+		"xds.base_ejection_time":                   c.XDS.BaseEjectionTime,
+		"envoy.drain_timeout":                      c.Envoy.DrainTimeout,
+		"envoy.restart_backoff":                    c.Envoy.RestartBackoff,
 	}
 	// 逐项解析所有时长字段。
 	for field, value := range durations {
 		if _, err := time.ParseDuration(strings.TrimSpace(value)); err != nil {
 			return fmt.Errorf("%s is invalid: %w", field, err)
 		}
+	}
+	// ownership 续约间隔必须严格小于 TTL，避免注册刚建立就自然过期。
+	if MustDuration(c.Consul.AgentLeaseRefreshInterval) >= MustDuration(c.Consul.AgentLeaseTTL) {
+		return errors.New("consul.agent_lease_refresh_interval must be smaller than consul.agent_lease_ttl")
 	}
 	// 自动拉起 Envoy 时需要二进制路径和 bootstrap 路径。
 	if c.Envoy.Enabled {

@@ -39,6 +39,7 @@ docker compose up --build -d
 - sidecar-agent 通过 `host.docker.internal` 访问外部 `consul`
 - sidecar-agent 通过 `host.docker.internal` 访问外部 `envoy admin`
 - telemetry 默认不依赖外部 OTLP
+- sidecar-agent 会为每个实例注册 agent ownership TTL，确保 agent 失效后实例最终退出 Consul
 - 若生产环境不跑在 Docker Desktop，需要把 `host.docker.internal` 替换成实际外部地址
 
 ## 二、标准版
@@ -101,6 +102,8 @@ docker compose -f docker-compose.full.yml up --build -d
 
 - `15010`
   - admin API
+- `GET /watch`
+  - 本地长连接事件流，供业务侧核心库在 agent 恢复后自动重放注册
 - `15011`
   - xDS gRPC
 - `15353`
@@ -133,6 +136,9 @@ docker compose -f docker-compose.full.yml up --build -d
 
 - `consul.address = host.docker.internal:8500`
 - `envoy.admin_address = host.docker.internal:19000`
+- `consul.agent_lease_ttl = 10s`
+- `consul.agent_lease_refresh_interval = 3s`
+- `consul.deregister_critical_service_after = 30s`
 - `telemetry.metric_enabled = false`
 - `telemetry.trace_enabled = false`
 
@@ -140,12 +146,18 @@ docker compose -f docker-compose.full.yml up --build -d
 
 - `consul.address = consul:8500`
 - `envoy.admin_address = envoy:19000`
+- `consul.agent_lease_ttl = 10s`
+- `consul.agent_lease_refresh_interval = 3s`
+- `consul.deregister_critical_service_after = 30s`
 - `telemetry` 默认仍不强绑本地 OTel Collector
 
 ### 完整版
 
 - `consul.address = consul:8500`
 - `envoy.admin_address = envoy:19000`
+- `consul.agent_lease_ttl = 10s`
+- `consul.agent_lease_refresh_interval = 3s`
+- `consul.deregister_critical_service_after = 30s`
 - `telemetry.otlp_endpoint = http://otel-collector:4318`
 - `trace/log/metric` 均走 OTLP
 

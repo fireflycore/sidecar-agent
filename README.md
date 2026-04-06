@@ -10,7 +10,7 @@
 - 基于 xDS 的共享 Envoy 控制面
 - 基于 OTel 的日志、指标、链路追踪
 
-当前代码形态不是通用 service mesh 全量实现，而是 v2.1 当前阶段的可运行骨架。
+当前代码形态不是通用 service mesh 全量实现，而是已经进入 v2.2 路线、具备 agent ownership 与业务侧自动重放注册骨架的可运行实现。
 
 ## 当前架构
 
@@ -49,6 +49,7 @@
 - `POST /drain`
 - `POST /deregister`
 - `GET /healthz`
+- `GET /watch`
 - `GET /debug/services`
 - `GET /debug/xds`
 
@@ -57,14 +58,19 @@
 - `register` 会校验请求参数、生成实例 ID、写入 Consul、写入完整路由文档
 - `drain` 会把实例切换到维护模式，并更新本地状态为 `Draining`
 - `deregister` 会从 Consul 注销实例，并更新本地状态为 `Deregistered`
+- `watch` 会提供本地长连接事件流，供业务侧核心库在连接恢复后自动重放注册
 
 ### 2. Consul 注册与发现
 
 已实现：
 
 - 写 Consul Service Registration
+- 写 agent ownership TTL 检查
 - 写服务 metadata
+- 写 `agent_id / agent_run_id / agent_started_at` 等归属信息
 - 写完整路由文档到 Consul KV
+- agent 启动时清理同一宿主机旧轮次残留实例
+- agent 正常退出时主动摘除本机已接管实例
 - 基于 Catalog + Health 拉取当前环境下的健康实例
 - 对发现结果做稳定排序，供 xDS 快照生成使用
 
@@ -117,12 +123,25 @@
 - envoy bootstrap 样例
 - consul 单节点 compose 样例
 
+### 8. go-micro 联动骨架
+
+已实现：
+
+- `go-micro/registry/agent` 包骨架
+- 统一 `RegisterRequest / DrainRequest / DeregisterRequest`
+- 业务侧 `Controller`
+- 本地连接事件 `Runner`
+- 本地 HTTP JSON client
+- `/watch` 长连接事件源
+- 连接恢复后自动重放 `register` 的最小运行时骨架
+
 ## 未实现内容
 
 以下内容按当前路线尚未进入可交付范围：
 
 - 独立 health-checker 模块
-- 自动端口探测、HTTP/grpc health 集成
+- 与 go-micro 框架启动钩子的完整自动集成
+- 本地长连接 lease / stream 的更强协议约束
 - ext_authz 过滤链接入
 - 方法级 path 路由治理
 - 更细粒度发布规则
@@ -169,6 +188,8 @@ go run ./cmd/sidecar-agent --config ./deploy/agent/sidecar-agent.yaml
 
 - `15010`
   - sidecar-agent admin API
+- `GET /watch`
+  - 本地 agent 连接恢复事件流
 - `15011`
   - xDS gRPC
 - `15353`
