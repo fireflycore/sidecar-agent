@@ -22,7 +22,7 @@ consul:
 
 xds:
   listen_address: 0.0.0.0:15011
-  node_id: sidecar-agent-compose-node
+  node_id: sidecar-agent-standard-node
   listener_address: 0.0.0.0:15001
   route_name: local-route
   default_timeout: 3s
@@ -45,10 +45,10 @@ envoy:
   log_level: info
 
 telemetry:
-  otlp_endpoint: http://127.0.0.1:4318
+  otlp_endpoint: http://host.docker.internal:4318
   trace_enabled: false
   trace_exporter: stdout
-  metric_enabled: true
+  metric_enabled: false
   metric_exporter: prometheus
   log_enabled: true
   log_exporter: stdout

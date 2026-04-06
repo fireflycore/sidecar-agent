@@ -1,0 +1,56 @@
+services:
+  consul:
+    image: consul:1.21
+    command:
+      - agent
+      - -server
+      - -bootstrap-expect=1
+      - -node=consul-server-1
+      - -bind=0.0.0.0
+      - -client=0.0.0.0
+      - -ui
+      - -datacenter=dc1
+      - -data-dir=/consul/data
+    ports:
+      - "8500:8500"
+    volumes:
+      - consul-data:/consul/data
+    restart: unless-stopped
+
+  sidecar-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - --config
+      - /etc/firefly/sidecar-agent/sidecar-agent.standard.yaml
+    depends_on:
+      - consul
+    ports:
+      - "15010:15010"
+      - "15011:15011"
+      - "15353:15353/udp"
+      - "15353:15353/tcp"
+    volumes:
+      - ./deploy/agent/sidecar-agent.standard.yaml:/etc/firefly/sidecar-agent/sidecar-agent.standard.yaml:ro
+    restart: unless-stopped
+
+  envoy:
+    image: envoyproxy/envoy:v1.36-latest
+    command:
+      - envoy
+      - -c
+      - /etc/envoy/bootstrap.yaml
+      - --log-level
+      - info
+    depends_on:
+      - sidecar-agent
+    ports:
+      - "15001:15001"
+      - "19000:19000"
+    volumes:
+      - ./deploy/envoy/bootstrap.compose.yaml:/etc/envoy/bootstrap.yaml:ro
+    restart: unless-stopped
+
+volumes:
+  consul-data:

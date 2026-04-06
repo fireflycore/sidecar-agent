@@ -1,0 +1,54 @@
+env: prod
+cluster_name: cluster-a
+zone: idc-a-1
+host_ip: 127.0.0.1
+
+dns:
+  listen_address: 0.0.0.0:15353
+  upstream_dns: 8.8.8.8:53
+
+admin:
+  listen_address: 0.0.0.0:15010
+
+discovery:
+  refresh_interval: 5s
+  debounce_interval: 1s
+
+consul:
+  address: host.docker.internal:8500
+  scheme: http
+  datacenter: dc1
+  route_kv_prefix: routes
+
+xds:
+  listen_address: 0.0.0.0:15011
+  node_id: sidecar-agent-minimal-node
+  listener_address: 0.0.0.0:15001
+  route_name: local-route
+  default_timeout: 3s
+  retry_attempts: 2
+  per_try_timeout: 1s
+  max_connections: 1024
+  max_pending_requests: 2048
+  max_requests: 4096
+  consecutive_5xx: 5
+  base_ejection_time: 30s
+  max_ejection_percent: 50
+
+envoy:
+  enabled: false
+  binary_path: /usr/local/bin/envoy
+  bootstrap_path: /etc/firefly/sidecar-agent/envoy-bootstrap.yaml
+  admin_address: host.docker.internal:19000
+  drain_timeout: 20s
+  restart_backoff: 3s
+  log_level: info
+
+telemetry:
+  otlp_endpoint: http://host.docker.internal:4318
+  trace_enabled: false
+  trace_exporter: stdout
+  metric_enabled: false
+  metric_exporter: prometheus
+  log_enabled: true
+  log_exporter: stdout
