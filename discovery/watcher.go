@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/fireflycore/sidecar-agent/model"
@@ -35,6 +36,8 @@ type Watcher struct {
 	refreshInterval time.Duration
 	// debounceInterval 表示最小发布时间间隔。
 	debounceInterval time.Duration
+	// mu 保护最近一次发布状态，避免主动刷新与后台轮询并发竞争。
+	mu sync.Mutex
 	// lastFingerprint 保存上次已发布快照摘要。
 	lastFingerprint string
 	// lastPublishAt 保存上次发布时间。
@@ -99,6 +102,9 @@ func (w *Watcher) refreshOnce(ctx context.Context, onUpdate func([]model.Service
 	if err != nil {
 		return err
 	}
+	// 在比较与写回最近发布状态前加锁，避免并发 RefreshNow 造成竞态。
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	// 未变化时直接返回，避免重复发布相同快照。
 	if fingerprint == w.lastFingerprint {
 		return nil

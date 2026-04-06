@@ -1,0 +1,18 @@
+[Unit]
+Description=Firefly Sidecar Agent
+After=network.target consul.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/firefly/sidecar-agent
+ExecStart=/opt/firefly/sidecar-agent/sidecar-agent --config /etc/firefly/sidecar-agent/sidecar-agent.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+Environment=GOTOOLCHAIN=local
+
+[Install]
+WantedBy=multi-user.target
