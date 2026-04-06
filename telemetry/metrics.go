@@ -2,8 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"strings"
-	"sync"
 	"sync/atomic"
 
 	otelapi "go.opentelemetry.io/otel"
@@ -28,8 +26,6 @@ type Metrics struct {
 	localServiceGaugeValue atomic.Int64
 	// callbacks 保存 observable instrument 的回调注册，避免被 GC 提前回收。
 	callbacks []metric.Registration
-	// lastErrors 保存最近一次错误摘要，便于后续扩展调试输出。
-	lastErrors sync.Map
 }
 
 // NewMetrics 创建一个基于全局 OTel meter provider 的指标容器。
@@ -128,10 +124,4 @@ func (m *Metrics) IncEnvoyRestart() {
 func (m *Metrics) SetLocalServiceGauge(value int) {
 	// 使用整型 gauge 便于直接暴露当前值。
 	m.localServiceGaugeValue.Store(int64(value))
-}
-
-// SetLastError 记录最近一次错误摘要。
-func (m *Metrics) SetLastError(component, value string) {
-	// 统一用组件名作为键，便于 /metrics 输出时展开。
-	m.lastErrors.Store(strings.TrimSpace(component), strings.TrimSpace(value))
 }

@@ -304,18 +304,15 @@ func (c Config) Validate() error {
 	}
 	// 关键字符串字段需要非空。
 	requiredStrings := map[string]string{
-		"consul.scheme":             c.Consul.Scheme,
-		"consul.datacenter":         c.Consul.Datacenter,
-		"xds.node_id":               c.XDS.NodeID,
-		"xds.route_name":            c.XDS.RouteName,
-		"xds.default_timeout":       c.XDS.DefaultTimeout,
-		"xds.per_try_timeout":       c.XDS.PerTryTimeout,
-		"envoy.drain_timeout":       c.Envoy.DrainTimeout,
-		"envoy.restart_backoff":     c.Envoy.RestartBackoff,
-		"envoy.log_level":           c.Envoy.LogLevel,
-		"telemetry.trace_exporter":  c.Telemetry.TraceExporter,
-		"telemetry.metric_exporter": c.Telemetry.MetricExporter,
-		"telemetry.log_exporter":    c.Telemetry.LogExporter,
+		"consul.scheme":         c.Consul.Scheme,
+		"consul.datacenter":     c.Consul.Datacenter,
+		"xds.node_id":           c.XDS.NodeID,
+		"xds.route_name":        c.XDS.RouteName,
+		"xds.default_timeout":   c.XDS.DefaultTimeout,
+		"xds.per_try_timeout":   c.XDS.PerTryTimeout,
+		"envoy.drain_timeout":   c.Envoy.DrainTimeout,
+		"envoy.restart_backoff": c.Envoy.RestartBackoff,
+		"envoy.log_level":       c.Envoy.LogLevel,
 	}
 	// 逐项校验必填字符串。
 	for field, value := range requiredStrings {
@@ -348,23 +345,29 @@ func (c Config) Validate() error {
 			return errors.New("envoy.bootstrap_path is required when envoy.enabled is true")
 		}
 	}
-	// telemetry.trace_exporter 仅允许已知导出器。
-	switch strings.TrimSpace(c.Telemetry.TraceExporter) {
-	case "stdout", "otlp":
-	default:
-		return fmt.Errorf("telemetry.trace_exporter is invalid: %s", c.Telemetry.TraceExporter)
+	// trace 打开时必须声明有效 exporter。
+	if c.Telemetry.TraceEnabled {
+		switch strings.TrimSpace(c.Telemetry.TraceExporter) {
+		case "stdout", "otlp":
+		default:
+			return fmt.Errorf("telemetry.trace_exporter is invalid: %s", c.Telemetry.TraceExporter)
+		}
 	}
-	// telemetry.metric_exporter 仅允许已知导出器，避免拼写错误导致静默失效。
-	switch strings.TrimSpace(c.Telemetry.MetricExporter) {
-	case "prometheus", "otlp":
-	default:
-		return fmt.Errorf("telemetry.metric_exporter is invalid: %s", c.Telemetry.MetricExporter)
+	// metric 打开时必须声明有效 exporter。
+	if c.Telemetry.MetricEnabled {
+		switch strings.TrimSpace(c.Telemetry.MetricExporter) {
+		case "prometheus", "otlp":
+		default:
+			return fmt.Errorf("telemetry.metric_exporter is invalid: %s", c.Telemetry.MetricExporter)
+		}
 	}
-	// telemetry.log_exporter 仅允许已知导出器。
-	switch strings.TrimSpace(c.Telemetry.LogExporter) {
-	case "stdout", "otlp":
-	default:
-		return fmt.Errorf("telemetry.log_exporter is invalid: %s", c.Telemetry.LogExporter)
+	// log 打开时必须声明有效 exporter。
+	if c.Telemetry.LogEnabled {
+		switch strings.TrimSpace(c.Telemetry.LogExporter) {
+		case "stdout", "otlp":
+		default:
+			return fmt.Errorf("telemetry.log_exporter is invalid: %s", c.Telemetry.LogExporter)
+		}
 	}
 	if c.Telemetry.TraceEnabled && strings.TrimSpace(c.Telemetry.TraceExporter) == "otlp" {
 		if strings.TrimSpace(c.Telemetry.OTLPEndpoint) == "" {

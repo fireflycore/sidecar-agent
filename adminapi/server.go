@@ -40,8 +40,6 @@ type Server struct {
 	refresher Refresher
 	// xdsServer 用于输出调试摘要。
 	xdsServer *xds.Server
-	// metricsHandler 用于暴露本地指标出口。
-	metricsHandler http.Handler
 	// logger 负责输出结构化日志。
 	logger *slog.Logger
 	// httpServer 保存底层 HTTP 服务。
@@ -54,11 +52,10 @@ func New(listenAddress string, registry Registry, refresher Refresher, xdsServer
 	mux := http.NewServeMux()
 	// 组装管理接口服务对象。
 	server := &Server{
-		registry:       registry,
-		refresher:      refresher,
-		xdsServer:      xdsServer,
-		metricsHandler: metricsHandler,
-		logger:         logger,
+		registry:  registry,
+		refresher: refresher,
+		xdsServer: xdsServer,
+		logger:    logger,
 		httpServer: &http.Server{
 			Addr:              listenAddress,
 			Handler:           mux,

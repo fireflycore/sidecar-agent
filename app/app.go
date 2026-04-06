@@ -258,7 +258,6 @@ func (r *Runner) publishInstances(instances []model.ServiceInstance) error {
 	// 调用 xDS 发布最新快照。
 	_, err := r.xdsServer.Publish(context.Background(), instances)
 	if err != nil {
-		r.metrics.SetLastError("xds", err.Error())
 		return err
 	}
 	// 发布成功时返回 nil。

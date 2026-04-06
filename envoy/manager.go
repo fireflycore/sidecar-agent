@@ -37,6 +37,10 @@ type Manager struct {
 	mu sync.Mutex
 	// cmd 保存当前 Envoy 进程。
 	cmd *exec.Cmd
+	// waitDone 在子进程退出后关闭，用于广播退出事件。
+	waitDone chan struct{}
+	// waitErr 保存最近一次进程退出结果。
+	waitErr error
 	// ctx 保存外部生命周期上下文。
 	ctx context.Context
 	// cancel 用于终止后台守护循环。
@@ -99,14 +103,12 @@ func (m *Manager) Stop(ctx context.Context) error {
 	if err := m.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
-	// 启动等待协程，避免阻塞持锁流程。
-	done := make(chan error, 1)
-	go func(cmd *exec.Cmd) {
-		done <- cmd.Wait()
-	}(m.cmd)
+	// 复用启动阶段建立的退出通知通道，避免重复调用 cmd.Wait。
+	done := m.waitDone
 	// 在上下文超时前等待退出完成。
 	select {
-	case err := <-done:
+	case <-done:
+		err := m.waitErr
 		if err != nil && !isExited(err) {
 			return err
 		}
@@ -115,6 +117,9 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 	// 清理进程引用。
 	m.cmd = nil
+	m.waitDone = nil
+	m.waitErr = nil
+	m.ctx = nil
 	// 返回成功结果。
 	return nil
 }
@@ -142,8 +147,20 @@ func (m *Manager) watchLoop() {
 		if cmd == nil {
 			return
 		}
+		// 读取当前进程退出通知通道。
+		waitDone := m.waitDone
 		// 等待当前进程退出。
-		err := cmd.Wait()
+		<-waitDone
+		// 读取当前进程退出结果。
+		err := m.waitErr
+		// 在处理完成后清理当前等待状态，便于后续重启生成新通道。
+		m.mu.Lock()
+		if m.cmd == cmd {
+			m.cmd = nil
+			m.waitDone = nil
+			m.waitErr = nil
+		}
+		m.mu.Unlock()
 		// 若是主动停止，则直接退出守护循环。
 		if ctx.Err() != nil {
 			return
@@ -195,6 +212,16 @@ func (m *Manager) startProcessLocked() error {
 	}
 	// 保存最新进程引用。
 	m.cmd = cmd
+	// 为当前进程建立唯一退出通知通道，并只在这个协程里调用一次 cmd.Wait。
+	m.waitDone = make(chan struct{})
+	m.waitErr = nil
+	go func(current *exec.Cmd, done chan struct{}) {
+		err := current.Wait()
+		m.mu.Lock()
+		m.waitErr = err
+		m.mu.Unlock()
+		close(done)
+	}(cmd, m.waitDone)
 	// 输出启动日志。
 	if m.logger != nil {
 		m.logger.Info("envoy process started",
