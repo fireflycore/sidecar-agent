@@ -86,7 +86,7 @@ func TestRegisterHandler(t *testing.T) {
 	// 创建最小测试依赖。
 	registry := &fakeRegistry{}
 	refresher := &fakeRefresher{}
-	server := New("127.0.0.1:0", registry, refresher, nil, nil, nil)
+	server := New("127.0.0.1:0", true, registry, refresher, nil, nil, nil)
 	// 构造一个合法 register 请求。
 	body := `{"app_id":"10001","app_name":"auth-center","name":"auth","namespace":"default","port":9090,"dns":"auth.default.svc.cluster.local","env":"prod","weight":100,"protocol":"grpc","kernel":{"language":"go","version":"go-micro/v1.12.0"},"methods":["/acme.auth.v1.AuthService/Login"],"version":"v1.3.4"}`
 	request := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
@@ -110,7 +110,7 @@ func TestRegisterHandler(t *testing.T) {
 // TestDebugEndpointDisabled 验证关闭调试模式后不会暴露 /debug/services。
 func TestDebugEndpointDisabled(t *testing.T) {
 	// 创建未开启 debug 的服务实例。
-	server := New("127.0.0.1:0", &fakeRegistry{}, nil, nil, nil, nil)
+	server := New("127.0.0.1:0", false, &fakeRegistry{}, nil, nil, nil, nil)
 	// 使用底层 mux 发起一次 GET 请求。
 	request := httptest.NewRequest(http.MethodGet, "/debug/services", nil)
 	writer := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestDebugServicesEndpoint(t *testing.T) {
 			},
 		},
 	}
-	server := New("127.0.0.1:0", registry, nil, nil, nil, nil)
+	server := New("127.0.0.1:0", true, registry, nil, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodGet, "/debug/services", nil)
 	writer := httptest.NewRecorder()
 	// 通过 mux 调用真实路由。

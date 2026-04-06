@@ -81,14 +81,26 @@ type Client struct {
 	kv kvAPI
 	// logger 统一输出结构化日志。
 	logger *slog.Logger
+	// metrics 负责累计本地生命周期指标。
+	metrics metricsRecorder
 	// mu 保护本机服务状态。
 	mu sync.RWMutex
 	// localServices 保存本机已知服务实例。
 	localServices map[string]model.LocalService
 }
 
+// metricsRecorder 抽象 registry 需要的最小指标能力。
+type metricsRecorder interface {
+	// IncRegister 统计注册次数。
+	IncRegister()
+	// IncDrain 统计摘流次数。
+	IncDrain()
+	// IncDeregister 统计注销次数。
+	IncDeregister()
+}
+
 // New 创建一个真实的 Consul 客户端。
-func New(settings Settings, logger *slog.Logger) (*Client, error) {
+func New(settings Settings, logger *slog.Logger, metrics metricsRecorder) (*Client, error) {
 	// 先构造官方 Consul 客户端配置。
 	cfg := api.DefaultConfig()
 	// 设置地址，避免读默认环境变量造成歧义。
@@ -104,11 +116,11 @@ func New(settings Settings, logger *slog.Logger) (*Client, error) {
 		return nil, err
 	}
 	// 复用 WithClient 完成装配。
-	return NewWithClient(settings, logger, client.Agent(), client.Health(), client.Catalog(), client.KV()), nil
+	return NewWithClient(settings, logger, metrics, client.Agent(), client.Health(), client.Catalog(), client.KV()), nil
 }
 
 // NewWithClient 允许在测试中注入假的 Consul 接口。
-func NewWithClient(settings Settings, logger *slog.Logger, agent agentAPI, health healthAPI, catalog catalogAPI, kv kvAPI) *Client {
+func NewWithClient(settings Settings, logger *slog.Logger, metrics metricsRecorder, agent agentAPI, health healthAPI, catalog catalogAPI, kv kvAPI) *Client {
 	// 返回一个可直接使用的 registry 客户端。
 	return &Client{
 		settings:      settings,
@@ -117,6 +129,7 @@ func NewWithClient(settings Settings, logger *slog.Logger, agent agentAPI, healt
 		catalog:       catalog,
 		kv:            kv,
 		logger:        logger,
+		metrics:       metrics,
 		localServices: make(map[string]model.LocalService),
 	}
 }
@@ -186,6 +199,10 @@ func (c *Client) Register(ctx context.Context, request model.RegisterRequest) (m
 			slog.Int("port", service.Request.Port),
 		)
 	}
+	// 注册成功后累计指标。
+	if c.metrics != nil {
+		c.metrics.IncRegister()
+	}
 	// 返回最终状态。
 	return service, nil
 }
@@ -228,6 +245,10 @@ func (c *Client) Drain(request model.DrainRequest) (model.LocalService, error) {
 			slog.String("deadline", deadline.Format(time.RFC3339)),
 		)
 	}
+	// 摘流成功后累计指标。
+	if c.metrics != nil {
+		c.metrics.IncDrain()
+	}
 	// 返回最新状态。
 	return service, nil
 }
@@ -261,6 +282,10 @@ func (c *Client) Deregister(request model.DeregisterRequest) (model.LocalService
 			slog.String("service", service.Request.Name),
 			slog.String("instance_id", service.InstanceID),
 		)
+	}
+	// 注销成功后累计指标。
+	if c.metrics != nil {
+		c.metrics.IncDeregister()
 	}
 	// 返回注销后的状态。
 	return service, nil

@@ -107,7 +107,7 @@ func TestRegisterDrainAndDeregister(t *testing.T) {
 		Zone:          "idc-a-1",
 		HostIP:        "127.0.0.1",
 		Env:           "prod",
-	}, nil, agent, &fakeHealthAPI{}, &fakeCatalogAPI{}, kv)
+	}, nil, nil, agent, &fakeHealthAPI{}, &fakeCatalogAPI{}, kv)
 	// 构造一份合法注册请求。
 	service, err := client.Register(context.Background(), model.RegisterRequest{
 		AppID:     "10001",

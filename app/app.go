@@ -15,6 +15,7 @@ import (
 	"github.com/fireflycore/sidecar-agent/registry"
 	"github.com/fireflycore/sidecar-agent/telemetry"
 	"github.com/fireflycore/sidecar-agent/xds"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Runner 负责装配并托管 sidecar-agent v2.1 当前阶段所有运行模块。
@@ -25,6 +26,8 @@ type Runner struct {
 	logger *slog.Logger
 	// metrics 提供最小 Prometheus 指标。
 	metrics *telemetry.Metrics
+	// telemetry 保存 OTel provider 生命周期。
+	telemetry *telemetry.System
 	// dnsServer 提供本地 DNS 拦截能力。
 	dnsServer *dns.Server
 	// registryClient 提供服务注册、摘流、注销与发现能力。
@@ -43,10 +46,19 @@ type Runner struct {
 
 // New 创建一个完整装配好的 sidecar-agent 运行器。
 func New(cfg config.Config) (*Runner, error) {
-	// 先创建统一日志器。
-	logger := telemetry.NewLogger()
-	// 创建指标容器。
-	metrics := telemetry.NewMetrics()
+	// 先按配置装配 OTel 日志与指标系统。
+	telemetrySystem, err := telemetry.New(context.Background(), cfg.Telemetry, "sidecar-agent",
+		attribute.String("sidecar.env", cfg.Env),
+		attribute.String("sidecar.cluster", cfg.ClusterName),
+		attribute.String("sidecar.zone", cfg.Zone),
+	)
+	if err != nil {
+		return nil, err
+	}
+	// 从 telemetry 中取出统一日志器。
+	logger := telemetrySystem.Logger()
+	// 从 telemetry 中取出统一指标句柄。
+	metrics := telemetrySystem.Metrics()
 	// 创建本地 DNS 服务器。
 	dnsServer := dns.New(cfg.DNS.UpstreamDNS)
 	// 创建 Consul 注册中心客户端。
@@ -59,7 +71,7 @@ func New(cfg config.Config) (*Runner, error) {
 		Zone:          cfg.Zone,
 		HostIP:        cfg.HostIP,
 		Env:           cfg.Env,
-	}, logger)
+	}, logger, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +113,7 @@ func New(cfg config.Config) (*Runner, error) {
 		cfg:            cfg,
 		logger:         logger,
 		metrics:        metrics,
+		telemetry:      telemetrySystem,
 		dnsServer:      dnsServer,
 		registryClient: registryClient,
 		watcher:        watcher,
@@ -109,10 +122,11 @@ func New(cfg config.Config) (*Runner, error) {
 	// 创建管理接口服务。
 	runner.adminServer = adminapi.New(
 		cfg.Admin.ListenAddress,
+		cfg.Admin.EnableDebug,
 		registryClient,
 		runner,
 		xdsServer,
-		metrics.Handler(),
+		telemetrySystem.MetricsHandler(),
 		logger,
 	)
 	// 当配置开启 Envoy 托管时再创建进程管理器。
@@ -216,6 +230,12 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(ctx, config.MustDuration(r.cfg.Envoy.DrainTimeout))
 		defer cancel()
 		if err := r.envoyManager.Stop(shutdownCtx); err != nil {
+			return err
+		}
+	}
+	// 在所有业务模块停止后再关闭 OTel provider，确保尾部日志与指标能刷出。
+	if r.telemetry != nil {
+		if err := r.telemetry.Shutdown(ctx); err != nil {
 			return err
 		}
 	}

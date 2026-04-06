@@ -44,3 +44,10 @@ envoy:
   drain_timeout: 20s
   restart_backoff: 3s
   log_level: info
+
+telemetry:
+  otlp_endpoint: http://127.0.0.1:4318
+  metric_enabled: true
+  metric_exporter: prometheus
+  log_enabled: true
+  log_exporter: stdout

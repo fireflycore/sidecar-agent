@@ -41,12 +41,14 @@ type Server struct {
 	metricsHandler http.Handler
 	// logger 负责输出结构化日志。
 	logger *slog.Logger
+	// enableDebug 控制是否暴露调试接口。
+	enableDebug bool
 	// httpServer 保存底层 HTTP 服务。
 	httpServer *http.Server
 }
 
 // New 创建一个新的管理接口服务。
-func New(listenAddress string, registry Registry, refresher Refresher, xdsServer *xds.Server, metricsHandler http.Handler, logger *slog.Logger) *Server {
+func New(listenAddress string, enableDebug bool, registry Registry, refresher Refresher, xdsServer *xds.Server, metricsHandler http.Handler, logger *slog.Logger) *Server {
 	// 先创建路由表。
 	mux := http.NewServeMux()
 	// 组装管理接口服务对象。
@@ -56,6 +58,7 @@ func New(listenAddress string, registry Registry, refresher Refresher, xdsServer
 		xdsServer:      xdsServer,
 		metricsHandler: metricsHandler,
 		logger:         logger,
+		enableDebug:    enableDebug,
 		httpServer: &http.Server{
 			Addr:              listenAddress,
 			Handler:           mux,
@@ -67,9 +70,12 @@ func New(listenAddress string, registry Registry, refresher Refresher, xdsServer
 	mux.HandleFunc("POST /drain", server.handleDrain)
 	mux.HandleFunc("POST /deregister", server.handleDeregister)
 	mux.HandleFunc("GET /healthz", server.handleHealthz)
-	mux.HandleFunc("GET /debug/services", server.handleDebugServices)
-	mux.HandleFunc("GET /debug/xds", server.handleDebugXDS)
-	// 如果指标处理器存在，则挂载 /metrics。
+	// 仅在调试开关打开时暴露调试接口。
+	if enableDebug {
+		mux.HandleFunc("GET /debug/services", server.handleDebugServices)
+		mux.HandleFunc("GET /debug/xds", server.handleDebugXDS)
+	}
+	// 指标接口由 telemetry 配置决定是否挂载。
 	if metricsHandler != nil {
 		mux.Handle("GET /metrics", metricsHandler)
 	}
