@@ -15,6 +15,9 @@ import (
 	cachev3 "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	serverv3 "github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"github.com/fireflycore/sidecar-agent/model"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/grpc"
 )
 
@@ -133,13 +136,21 @@ func (s *Server) Stop() {
 
 // Publish 用最新实例集合生成并发布一版快照。
 func (s *Server) Publish(ctx context.Context, instances []model.ServiceInstance) (Summary, error) {
+	// 为每次快照发布创建 span，便于观察发现结果到 xDS 的转换链路。
+	ctx, span := otel.Tracer("sidecar-agent/xds").Start(ctx, "xds.publish")
+	defer span.End()
+	span.SetAttributes(attribute.Int("instances.count", len(instances)))
 	// 先构建快照。
 	snapshot, summary, err := s.builder.Build(instances)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return Summary{}, err
 	}
 	// 把快照写入 SnapshotCache。
 	if err := s.cache.SetSnapshot(ctx, s.nodeID, snapshot); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return Summary{}, err
 	}
 	// 统计发布次数。
@@ -154,6 +165,11 @@ func (s *Server) Publish(ctx context.Context, instances []model.ServiceInstance)
 			slog.Int("endpoints", summary.EndpointCount),
 		)
 	}
+	span.SetAttributes(
+		attribute.Int("clusters.count", summary.ClusterCount),
+		attribute.Int("endpoints.count", summary.EndpointCount),
+	)
+	span.SetStatus(codes.Ok, "published")
 	// 返回当前摘要。
 	return summary, nil
 }

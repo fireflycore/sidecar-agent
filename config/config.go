@@ -34,7 +34,7 @@ type Config struct {
 	XDS XDSConfig `yaml:"xds"`
 	// Envoy 保存共享 Envoy 管理参数。
 	Envoy EnvoyConfig `yaml:"envoy"`
-	// Telemetry 保存 OTel 日志与指标配置。
+	// Telemetry 保存 OTel trace、日志与指标配置。
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 }
 
@@ -50,8 +50,6 @@ type DNSConfig struct {
 type AdminConfig struct {
 	// ListenAddress 表示本地管理接口监听地址。
 	ListenAddress string `yaml:"listen_address"`
-	// EnableDebug 控制调试接口是否打开。
-	EnableDebug bool `yaml:"enable_debug"`
 }
 
 // DiscoveryConfig 描述 Consul 拉取节奏。
@@ -126,6 +124,10 @@ type EnvoyConfig struct {
 type TelemetryConfig struct {
 	// OTLPEndpoint 表示 OTLP/HTTP 导出端点。
 	OTLPEndpoint string `yaml:"otlp_endpoint"`
+	// TraceEnabled 控制是否启用 OTel trace。
+	TraceEnabled bool `yaml:"trace_enabled"`
+	// TraceExporter 控制 trace 导出方式，当前支持 stdout 与 otlp。
+	TraceExporter string `yaml:"trace_exporter"`
 	// MetricEnabled 控制是否启用 OTel 指标。
 	MetricEnabled bool `yaml:"metric_enabled"`
 	// MetricExporter 控制指标导出方式，当前支持 prometheus 与 otlp。
@@ -153,8 +155,6 @@ func Default() Config {
 		Admin: AdminConfig{
 			// 管理接口固定落在本机 15010。
 			ListenAddress: "127.0.0.1:15010",
-			// 默认打开调试接口，便于开发阶段观察。
-			EnableDebug: true,
 		},
 		Discovery: DiscoveryConfig{
 			// 轮询间隔使用 5 秒，兼顾实现简单与可观测性。
@@ -214,6 +214,10 @@ func Default() Config {
 		Telemetry: TelemetryConfig{
 			// OTLP 端点默认指向本机 Collector。
 			OTLPEndpoint: "http://127.0.0.1:4318",
+			// trace 默认关闭，避免开发阶段产生过量输出。
+			TraceEnabled: false,
+			// trace 导出器默认使用 stdout，打开时便于本机观察。
+			TraceExporter: "stdout",
 			// 指标默认开启。
 			MetricEnabled: true,
 			// 默认通过 Prometheus exporter 暴露本机指标。
@@ -309,6 +313,7 @@ func (c Config) Validate() error {
 		"envoy.drain_timeout":       c.Envoy.DrainTimeout,
 		"envoy.restart_backoff":     c.Envoy.RestartBackoff,
 		"envoy.log_level":           c.Envoy.LogLevel,
+		"telemetry.trace_exporter":  c.Telemetry.TraceExporter,
 		"telemetry.metric_exporter": c.Telemetry.MetricExporter,
 		"telemetry.log_exporter":    c.Telemetry.LogExporter,
 	}
@@ -343,6 +348,12 @@ func (c Config) Validate() error {
 			return errors.New("envoy.bootstrap_path is required when envoy.enabled is true")
 		}
 	}
+	// telemetry.trace_exporter 仅允许已知导出器。
+	switch strings.TrimSpace(c.Telemetry.TraceExporter) {
+	case "stdout", "otlp":
+	default:
+		return fmt.Errorf("telemetry.trace_exporter is invalid: %s", c.Telemetry.TraceExporter)
+	}
 	// telemetry.metric_exporter 仅允许已知导出器，避免拼写错误导致静默失效。
 	switch strings.TrimSpace(c.Telemetry.MetricExporter) {
 	case "prometheus", "otlp":
@@ -354,6 +365,11 @@ func (c Config) Validate() error {
 	case "stdout", "otlp":
 	default:
 		return fmt.Errorf("telemetry.log_exporter is invalid: %s", c.Telemetry.LogExporter)
+	}
+	if c.Telemetry.TraceEnabled && strings.TrimSpace(c.Telemetry.TraceExporter) == "otlp" {
+		if strings.TrimSpace(c.Telemetry.OTLPEndpoint) == "" {
+			return errors.New("telemetry.otlp_endpoint is required when using otlp trace exporter")
+		}
 	}
 	// 当任一信号使用 OTLP exporter 时，端点必须存在。
 	if (c.Telemetry.MetricEnabled && strings.TrimSpace(c.Telemetry.MetricExporter) == "otlp") ||

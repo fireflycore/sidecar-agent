@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/fireflycore/sidecar-agent/model"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Source 抽象一个可拉取当前健康实例集合的来源。
@@ -88,9 +91,14 @@ func (w *Watcher) RefreshNow(ctx context.Context, onUpdate func([]model.ServiceI
 
 // refreshOnce 完成一轮发现、去重与快照发布。
 func (w *Watcher) refreshOnce(ctx context.Context, onUpdate func([]model.ServiceInstance) error) error {
+	// 为单轮发现刷新创建 span，便于观察轮询与主动刷新行为。
+	ctx, span := otel.Tracer("sidecar-agent/discovery").Start(ctx, "discovery.refresh")
+	defer span.End()
 	// 从数据源读取最新健康实例。
 	instances, err := w.source.Discover(ctx)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	// 记录刷新次数指标。
@@ -100,6 +108,8 @@ func (w *Watcher) refreshOnce(ctx context.Context, onUpdate func([]model.Service
 	// 计算当前实例集合的稳定摘要。
 	fingerprint, err := hashInstances(instances)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	// 在比较与写回最近发布状态前加锁，避免并发 RefreshNow 造成竞态。
@@ -107,14 +117,18 @@ func (w *Watcher) refreshOnce(ctx context.Context, onUpdate func([]model.Service
 	defer w.mu.Unlock()
 	// 未变化时直接返回，避免重复发布相同快照。
 	if fingerprint == w.lastFingerprint {
+		span.SetStatus(codes.Ok, "unchanged")
 		return nil
 	}
 	// 若距离上次发布时间过近，则直接跳过本轮发布。
 	if !w.lastPublishAt.IsZero() && time.Since(w.lastPublishAt) < w.debounceInterval {
+		span.SetStatus(codes.Ok, "debounced")
 		return nil
 	}
 	// 回调上层完成快照构建与发布。
 	if err := onUpdate(instances); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	// 更新已发布摘要与时间戳。
@@ -126,6 +140,8 @@ func (w *Watcher) refreshOnce(ctx context.Context, onUpdate func([]model.Service
 			slog.Int("instances", len(instances)),
 		)
 	}
+	span.SetAttributes(attribute.Int("instances.count", len(instances)))
+	span.SetStatus(codes.Ok, "published")
 	// 返回成功结果。
 	return nil
 }

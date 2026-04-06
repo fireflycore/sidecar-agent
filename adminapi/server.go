@@ -9,6 +9,9 @@ import (
 
 	"github.com/fireflycore/sidecar-agent/model"
 	"github.com/fireflycore/sidecar-agent/xds"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Registry 抽象管理接口依赖的本地注册中心能力。
@@ -37,18 +40,16 @@ type Server struct {
 	refresher Refresher
 	// xdsServer 用于输出调试摘要。
 	xdsServer *xds.Server
-	// metricsHandler 用于暴露 Prometheus 文本指标。
+	// metricsHandler 用于暴露本地指标出口。
 	metricsHandler http.Handler
 	// logger 负责输出结构化日志。
 	logger *slog.Logger
-	// enableDebug 控制是否暴露调试接口。
-	enableDebug bool
 	// httpServer 保存底层 HTTP 服务。
 	httpServer *http.Server
 }
 
 // New 创建一个新的管理接口服务。
-func New(listenAddress string, enableDebug bool, registry Registry, refresher Refresher, xdsServer *xds.Server, metricsHandler http.Handler, logger *slog.Logger) *Server {
+func New(listenAddress string, registry Registry, refresher Refresher, xdsServer *xds.Server, metricsHandler http.Handler, logger *slog.Logger) *Server {
 	// 先创建路由表。
 	mux := http.NewServeMux()
 	// 组装管理接口服务对象。
@@ -58,7 +59,6 @@ func New(listenAddress string, enableDebug bool, registry Registry, refresher Re
 		xdsServer:      xdsServer,
 		metricsHandler: metricsHandler,
 		logger:         logger,
-		enableDebug:    enableDebug,
 		httpServer: &http.Server{
 			Addr:              listenAddress,
 			Handler:           mux,
@@ -70,11 +70,9 @@ func New(listenAddress string, enableDebug bool, registry Registry, refresher Re
 	mux.HandleFunc("POST /drain", server.handleDrain)
 	mux.HandleFunc("POST /deregister", server.handleDeregister)
 	mux.HandleFunc("GET /healthz", server.handleHealthz)
-	// 仅在调试开关打开时暴露调试接口。
-	if enableDebug {
-		mux.HandleFunc("GET /debug/services", server.handleDebugServices)
-		mux.HandleFunc("GET /debug/xds", server.handleDebugXDS)
-	}
+	// 调试接口固定暴露，便于本地联调与运维排障。
+	mux.HandleFunc("GET /debug/services", server.handleDebugServices)
+	mux.HandleFunc("GET /debug/xds", server.handleDebugXDS)
 	// 指标接口由 telemetry 配置决定是否挂载。
 	if metricsHandler != nil {
 		mux.Handle("GET /metrics", metricsHandler)
@@ -119,69 +117,111 @@ func (s *Server) RefreshNow(ctx context.Context) error {
 
 // handleRegister 处理本地服务启动登记。
 func (s *Server) handleRegister(writer http.ResponseWriter, request *http.Request) {
+	// 为注册请求创建一段管理面 span，便于串起后续注册与刷新流程。
+	ctx, span := otel.Tracer("sidecar-agent/adminapi").Start(request.Context(), "admin.register")
+	defer span.End()
 	// 解码 JSON 请求体。
 	var payload model.RegisterRequest
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusBadRequest, err)
 		return
 	}
+	span.SetAttributes(
+		attribute.String("service.name", payload.Name),
+		attribute.Int("service.port", payload.Port),
+	)
 	// 调用 registry 执行注册。
-	service, err := s.registry.Register(request.Context(), payload)
+	service, err := s.registry.Register(ctx, payload)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusBadRequest, err)
 		return
 	}
 	// 注册成功后立即触发一次快照收敛。
-	if err := s.RefreshNow(request.Context()); err != nil {
+	if err := s.RefreshNow(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusInternalServerError, err)
 		return
 	}
+	span.SetStatus(codes.Ok, "registered")
 	// 返回最终服务状态。
 	writeJSON(writer, http.StatusOK, service)
 }
 
 // handleDrain 处理优雅摘流请求。
 func (s *Server) handleDrain(writer http.ResponseWriter, request *http.Request) {
+	// 为摘流请求创建 span，便于和注册中心维护模式联动观察。
+	ctx, span := otel.Tracer("sidecar-agent/adminapi").Start(request.Context(), "admin.drain")
+	defer span.End()
 	// 解码 JSON 请求体。
 	var payload model.DrainRequest
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusBadRequest, err)
 		return
 	}
+	span.SetAttributes(
+		attribute.String("service.name", payload.Name),
+		attribute.Int("service.port", payload.Port),
+	)
 	// 执行摘流。
 	service, err := s.registry.Drain(payload)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusBadRequest, err)
 		return
 	}
 	// 摘流后主动收敛发现与 xDS。
-	if err := s.RefreshNow(request.Context()); err != nil {
+	if err := s.RefreshNow(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusInternalServerError, err)
 		return
 	}
+	span.SetStatus(codes.Ok, "draining")
 	// 返回最新服务状态。
 	writeJSON(writer, http.StatusOK, service)
 }
 
 // handleDeregister 处理强制注销请求。
 func (s *Server) handleDeregister(writer http.ResponseWriter, request *http.Request) {
+	// 为注销请求创建 span，便于观察生命周期最后一步。
+	ctx, span := otel.Tracer("sidecar-agent/adminapi").Start(request.Context(), "admin.deregister")
+	defer span.End()
 	// 解码 JSON 请求体。
 	var payload model.DeregisterRequest
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusBadRequest, err)
 		return
 	}
+	span.SetAttributes(
+		attribute.String("service.name", payload.Name),
+		attribute.Int("service.port", payload.Port),
+	)
 	// 执行注销。
 	service, err := s.registry.Deregister(payload)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusBadRequest, err)
 		return
 	}
 	// 注销后立即刷新下游快照。
-	if err := s.RefreshNow(request.Context()); err != nil {
+	if err := s.RefreshNow(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeError(writer, http.StatusInternalServerError, err)
 		return
 	}
+	span.SetStatus(codes.Ok, "deregistered")
 	// 返回最新状态。
 	writeJSON(writer, http.StatusOK, service)
 }

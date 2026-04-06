@@ -15,11 +15,14 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
@@ -35,6 +38,8 @@ type System struct {
 	logProvider *sdklog.LoggerProvider
 	// meterProvider 保存 OTel 指标 provider，便于进程退出时统一关闭。
 	meterProvider *sdkmetric.MeterProvider
+	// tracerProvider 保存 OTel trace provider，便于进程退出时统一关闭。
+	tracerProvider *sdktrace.TracerProvider
 }
 
 // New 根据 telemetry 配置安装 sidecar-agent 需要的可观测能力。
@@ -68,6 +73,15 @@ func New(ctx context.Context, cfg config.TelemetryConfig, serviceName string, at
 			system.meterProvider = meterProvider
 			system.metricsHandler = handler
 			otelapi.SetMeterProvider(meterProvider)
+		}
+		// 根据配置安装 trace provider。
+		if cfg.TraceEnabled {
+			tracerProvider, err := newTracerProvider(ctx, cfg, res)
+			if err != nil {
+				return nil, err
+			}
+			system.tracerProvider = tracerProvider
+			otelapi.SetTracerProvider(tracerProvider)
 		}
 	}
 	// 无论 exporter 是否开启，都创建统一的指标句柄。
@@ -107,6 +121,9 @@ func (s *System) Shutdown(ctx context.Context) error {
 	}
 	if s.meterProvider != nil {
 		shutdownErr = errors.Join(shutdownErr, s.meterProvider.Shutdown(ctx))
+	}
+	if s.tracerProvider != nil {
+		shutdownErr = errors.Join(shutdownErr, s.tracerProvider.Shutdown(ctx))
 	}
 	return shutdownErr
 }
@@ -188,4 +205,34 @@ func newMeterProvider(ctx context.Context, cfg config.TelemetryConfig, res *reso
 	default:
 		return nil, nil, errors.New("unsupported telemetry metric exporter")
 	}
+}
+
+// newTracerProvider 根据配置创建 OTel trace provider。
+func newTracerProvider(ctx context.Context, cfg config.TelemetryConfig, res *resource.Resource) (*sdktrace.TracerProvider, error) {
+	// 限定 exporter 初始化超时。
+	initCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	// 根据配置选择 trace exporter。
+	var exporter sdktrace.SpanExporter
+	switch strings.TrimSpace(cfg.TraceExporter) {
+	case "stdout":
+		stdoutExporter, err := stdouttrace.New()
+		if err != nil {
+			return nil, err
+		}
+		exporter = stdoutExporter
+	case "otlp":
+		otlpExporter, err := otlptracehttp.New(initCtx, otlptracehttp.WithEndpointURL(strings.TrimSpace(cfg.OTLPEndpoint)))
+		if err != nil {
+			return nil, err
+		}
+		exporter = otlpExporter
+	default:
+		return nil, errors.New("unsupported telemetry trace exporter")
+	}
+	// 使用 batcher 承接 span 导出，降低热路径开销。
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+	), nil
 }

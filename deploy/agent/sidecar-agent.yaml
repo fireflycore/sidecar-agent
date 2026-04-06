@@ -9,7 +9,6 @@ dns:
 
 admin:
   listen_address: 127.0.0.1:15010
-  enable_debug: true
 
 discovery:
   refresh_interval: 5s
@@ -47,6 +46,8 @@ envoy:
 
 telemetry:
   otlp_endpoint: http://127.0.0.1:4318
+  trace_enabled: false
+  trace_exporter: stdout
   metric_enabled: true
   metric_exporter: prometheus
   log_enabled: true

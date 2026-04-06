@@ -23,3 +23,17 @@ func TestValidateRejectsInvalidHostIP(t *testing.T) {
 		t.Fatal("expected invalid host_ip to fail")
 	}
 }
+
+// TestValidateRejectsMissingTraceEndpoint 验证 trace 走 OTLP 时必须提供端点。
+func TestValidateRejectsMissingTraceEndpoint(t *testing.T) {
+	// 基于默认配置构造 trace OTLP 场景。
+	cfg := Default()
+	// 打开 trace 并切到 OTLP exporter。
+	cfg.Telemetry.TraceEnabled = true
+	cfg.Telemetry.TraceExporter = "otlp"
+	cfg.Telemetry.OTLPEndpoint = ""
+	// 校验必须失败。
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing trace endpoint to fail")
+	}
+}

@@ -15,6 +15,9 @@ import (
 
 	"github.com/fireflycore/sidecar-agent/model"
 	"github.com/hashicorp/consul/api"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Settings 描述 Consul 注册、发现与路由文档写入的最小参数。
@@ -136,8 +139,18 @@ func NewWithClient(settings Settings, logger *slog.Logger, metrics metricsRecord
 
 // Register 处理本地业务服务的注册请求。
 func (c *Client) Register(ctx context.Context, request model.RegisterRequest) (model.LocalService, error) {
+	// 为本地注册流程创建 span，便于串起 KV 写入与 Consul 注册。
+	ctx, span := otel.Tracer("sidecar-agent/registry").Start(ctx, "registry.register")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("service.name", request.Name),
+		attribute.String("service.namespace", request.Namespace),
+		attribute.Int("service.port", request.Port),
+	)
 	// 先校验请求字段，避免脏数据进入控制面。
 	if err := request.Validate(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 为完整方法列表提取稳定路由前缀。
@@ -157,11 +170,15 @@ func (c *Client) Register(ctx context.Context, request model.RegisterRequest) (m
 	}
 	// 若当前服务已有生效路由文档，则必须确保语义一致。
 	if err := c.ensureRouteDocument(ctx, routeConfigRef, routeDoc); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 生成 agent 统一维护的实例 ID。
 	instanceID, err := newInstanceID()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 先把状态置为 Registered，形成完整的状态机轨迹。
@@ -179,6 +196,8 @@ func (c *Client) Register(ctx context.Context, request model.RegisterRequest) (m
 	}
 	// 把实例注册到 Consul agent。
 	if err := c.agent.ServiceRegister(c.registrationFor(service)); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 注册完成后切换到 Serving。
@@ -203,19 +222,32 @@ func (c *Client) Register(ctx context.Context, request model.RegisterRequest) (m
 	if c.metrics != nil {
 		c.metrics.IncRegister()
 	}
+	span.SetAttributes(attribute.String("instance.id", service.InstanceID))
+	span.SetStatus(codes.Ok, "registered")
 	// 返回最终状态。
 	return service, nil
 }
 
 // Drain 将本机实例切换到维护模式，并更新本地状态为 Draining。
 func (c *Client) Drain(request model.DrainRequest) (model.LocalService, error) {
+	// 为摘流流程创建 span，便于观察维护模式切换。
+	_, span := otel.Tracer("sidecar-agent/registry").Start(context.Background(), "registry.drain")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("service.name", request.Name),
+		attribute.Int("service.port", request.Port),
+	)
 	// 先校验用户输入。
 	if err := request.Validate(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 解析宽限期，供调试接口展示。
 	gracePeriod, err := request.GracePeriod()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 读取当前本机实例状态。
@@ -223,10 +255,15 @@ func (c *Client) Drain(request model.DrainRequest) (model.LocalService, error) {
 	defer c.mu.Unlock()
 	service, ok := c.localServices[c.localKey(request.Name, request.Port)]
 	if !ok {
-		return model.LocalService{}, fmt.Errorf("local service not found: %s:%d", request.Name, request.Port)
+		err := fmt.Errorf("local service not found: %s:%d", request.Name, request.Port)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return model.LocalService{}, err
 	}
 	// 先在 Consul 中启用维护模式，让实例立即退出健康集。
 	if err := c.agent.EnableServiceMaintenance(service.InstanceID, "draining by sidecar-agent"); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 记录摘流截止时间。
@@ -249,14 +286,25 @@ func (c *Client) Drain(request model.DrainRequest) (model.LocalService, error) {
 	if c.metrics != nil {
 		c.metrics.IncDrain()
 	}
+	span.SetAttributes(attribute.String("instance.id", service.InstanceID))
+	span.SetStatus(codes.Ok, "draining")
 	// 返回最新状态。
 	return service, nil
 }
 
 // Deregister 强制把本机实例从 Consul 注销。
 func (c *Client) Deregister(request model.DeregisterRequest) (model.LocalService, error) {
+	// 为注销流程创建 span，便于生命周期追踪。
+	_, span := otel.Tracer("sidecar-agent/registry").Start(context.Background(), "registry.deregister")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("service.name", request.Name),
+		attribute.Int("service.port", request.Port),
+	)
 	// 先校验用户输入。
 	if err := request.Validate(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 读取并锁定本机状态。
@@ -264,10 +312,15 @@ func (c *Client) Deregister(request model.DeregisterRequest) (model.LocalService
 	defer c.mu.Unlock()
 	service, ok := c.localServices[c.localKey(request.Name, request.Port)]
 	if !ok {
-		return model.LocalService{}, fmt.Errorf("local service not found: %s:%d", request.Name, request.Port)
+		err := fmt.Errorf("local service not found: %s:%d", request.Name, request.Port)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return model.LocalService{}, err
 	}
 	// 先从 Consul 注销实例。
 	if err := c.agent.ServiceDeregister(service.InstanceID); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return model.LocalService{}, err
 	}
 	// 更新本地状态为 Deregistered。
@@ -287,6 +340,8 @@ func (c *Client) Deregister(request model.DeregisterRequest) (model.LocalService
 	if c.metrics != nil {
 		c.metrics.IncDeregister()
 	}
+	span.SetAttributes(attribute.String("instance.id", service.InstanceID))
+	span.SetStatus(codes.Ok, "deregistered")
 	// 返回注销后的状态。
 	return service, nil
 }
@@ -329,12 +384,17 @@ func (c *Client) LocalServices() []model.LocalService {
 
 // Discover 从 Consul 中拉取当前环境可见的健康实例。
 func (c *Client) Discover(ctx context.Context) ([]model.ServiceInstance, error) {
+	// 为发现流程创建 span，便于观察 Consul 拉取与环境过滤。
+	ctx, span := otel.Tracer("sidecar-agent/registry").Start(ctx, "registry.discover")
+	defer span.End()
 	// 先读取当前 catalog 里的服务索引。
 	services, _, err := c.catalog.Services(&api.QueryOptions{
 		// 透传调用方上下文，便于上层统一控制超时。
 		AllowStale: true,
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	// 预先准备结果切片。
@@ -346,6 +406,8 @@ func (c *Client) Discover(ctx context.Context) ([]model.ServiceInstance, error) 
 			AllowStale: true,
 		})
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, err
 		}
 		// 把 Consul 返回值转换成内部模型。
@@ -375,6 +437,8 @@ func (c *Client) Discover(ctx context.Context) ([]model.ServiceInstance, error) 
 		}
 	})
 	// 返回当前环境下的所有健康实例。
+	span.SetAttributes(attribute.Int("instances.count", len(instances)))
+	span.SetStatus(codes.Ok, "discovered")
 	return instances, nil
 }
 

@@ -24,7 +24,7 @@ type Runner struct {
 	cfg config.Config
 	// logger 提供统一结构化日志。
 	logger *slog.Logger
-	// metrics 提供最小 Prometheus 指标。
+	// metrics 提供统一 OTel 指标句柄。
 	metrics *telemetry.Metrics
 	// telemetry 保存 OTel provider 生命周期。
 	telemetry *telemetry.System
@@ -122,7 +122,6 @@ func New(cfg config.Config) (*Runner, error) {
 	// 创建管理接口服务。
 	runner.adminServer = adminapi.New(
 		cfg.Admin.ListenAddress,
-		cfg.Admin.EnableDebug,
 		registryClient,
 		runner,
 		xdsServer,
