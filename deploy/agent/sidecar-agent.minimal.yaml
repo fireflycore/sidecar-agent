@@ -19,6 +19,7 @@ consul:
   scheme: http
   datacenter: dc1
   route_kv_prefix: routes
+  request_timeout: 3s
   agent_lease_ttl: 10s
   agent_lease_refresh_interval: 3s
   deregister_critical_service_after: 30s

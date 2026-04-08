@@ -38,6 +38,7 @@ docker compose up --build -d
 
 - sidecar-agent 通过 `192.168.1.100:18500` 访问外部 `consul`
 - sidecar-agent 通过 `192.168.1.100:18503` 访问外部 `envoy admin`
+- sidecar-agent 对外部 Consul 的 HTTP 请求默认使用 `3s` 超时，避免退出阶段长时间卡住
 - telemetry 默认指向外部 `OTLP HTTP` 地址 `192.168.1.100:4318`
 - sidecar-agent 会为每个实例注册 agent ownership TTL，确保 agent 失效后实例最终退出 Consul
 - 若外部基础设施地址变化，需要同步修改 `sidecar-agent.minimal.yaml`
@@ -135,6 +136,7 @@ docker compose -f docker-compose.full.yml up --build -d
 ### 最小版
 
 - `consul.address = 192.168.1.100:18500`
+- `consul.request_timeout = 3s`
 - `envoy.admin_address = 192.168.1.100:18503`
 - `consul.agent_lease_ttl = 10s`
 - `consul.agent_lease_refresh_interval = 3s`

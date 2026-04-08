@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -29,7 +30,8 @@ type Settings struct {
 	// Datacenter 表示默认数据中心。
 	Datacenter string
 	// RouteKVPrefix 表示路由文档写入前缀。
-	RouteKVPrefix string
+	RouteKVPrefix  string
+	RequestTimeout time.Duration
 	// ClusterName 表示当前实例所属集群。
 	ClusterName string
 	// Zone 表示宿主机所在机房或可用区。
@@ -130,6 +132,12 @@ func New(settings Settings, logger *slog.Logger, metrics metricsRecorder) (*Clie
 	cfg.Scheme = strings.TrimSpace(settings.Scheme)
 	// 设置默认数据中心。
 	cfg.Datacenter = strings.TrimSpace(settings.Datacenter)
+	if settings.RequestTimeout > 0 {
+		if cfg.HttpClient == nil {
+			cfg.HttpClient = &http.Client{}
+		}
+		cfg.HttpClient.Timeout = settings.RequestTimeout
+	}
 	// 创建底层 Consul client。
 	client, err := api.NewClient(cfg)
 	if err != nil {

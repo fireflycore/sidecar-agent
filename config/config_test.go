@@ -50,3 +50,11 @@ func TestValidateRejectsLeaseRefreshNotSmallerThanTTL(t *testing.T) {
 		t.Fatal("expected invalid lease refresh interval to fail")
 	}
 }
+
+func TestValidateRejectsInvalidConsulRequestTimeout(t *testing.T) {
+	cfg := Default()
+	cfg.Consul.RequestTimeout = "not-a-duration"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid consul request timeout to fail")
+	}
+}

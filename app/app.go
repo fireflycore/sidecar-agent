@@ -67,6 +67,7 @@ func New(cfg config.Config) (*Runner, error) {
 		Scheme:                         cfg.Consul.Scheme,
 		Datacenter:                     cfg.Consul.Datacenter,
 		RouteKVPrefix:                  cfg.Consul.RouteKVPrefix,
+		RequestTimeout:                 config.MustDuration(cfg.Consul.RequestTimeout),
 		ClusterName:                    cfg.ClusterName,
 		Zone:                           cfg.Zone,
 		HostIP:                         cfg.HostIP,

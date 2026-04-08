@@ -69,7 +69,8 @@ type ConsulConfig struct {
 	// Datacenter 表示默认数据中心。
 	Datacenter string `yaml:"datacenter"`
 	// RouteKVPrefix 表示完整路由文档写入前缀。
-	RouteKVPrefix string `yaml:"route_kv_prefix"`
+	RouteKVPrefix  string `yaml:"route_kv_prefix"`
+	RequestTimeout string `yaml:"request_timeout"`
 	// AgentLeaseTTL 表示 agent ownership TTL 的过期时间。
 	AgentLeaseTTL string `yaml:"agent_lease_ttl"`
 	// AgentLeaseRefreshInterval 表示 agent ownership 的续约间隔。
@@ -176,7 +177,8 @@ func Default() Config {
 			// 默认数据中心名采用 dc1。
 			Datacenter: "dc1",
 			// 路由文档前缀严格使用 routes。
-			RouteKVPrefix: "routes",
+			RouteKVPrefix:  "routes",
+			RequestTimeout: "3s",
 			// agent ownership 默认 10 秒过期，兼顾快速摘除与抖动容忍。
 			AgentLeaseTTL: "10s",
 			// 续约间隔默认 3 秒，确保在 TTL 过期前至少续租多次。
@@ -318,6 +320,7 @@ func (c Config) Validate() error {
 	requiredStrings := map[string]string{
 		"consul.scheme":                            c.Consul.Scheme,
 		"consul.datacenter":                        c.Consul.Datacenter,
+		"consul.request_timeout":                   c.Consul.RequestTimeout,
 		"consul.agent_lease_ttl":                   c.Consul.AgentLeaseTTL,
 		"consul.agent_lease_refresh_interval":      c.Consul.AgentLeaseRefreshInterval,
 		"consul.deregister_critical_service_after": c.Consul.DeregisterCriticalServiceAfter,
@@ -339,6 +342,7 @@ func (c Config) Validate() error {
 	durations := map[string]string{
 		"discovery.refresh_interval":               c.Discovery.RefreshInterval,
 		"discovery.debounce_interval":              c.Discovery.DebounceInterval,
+		"consul.request_timeout":                   c.Consul.RequestTimeout,
 		"consul.agent_lease_ttl":                   c.Consul.AgentLeaseTTL,
 		"consul.agent_lease_refresh_interval":      c.Consul.AgentLeaseRefreshInterval,
 		"consul.deregister_critical_service_after": c.Consul.DeregisterCriticalServiceAfter,

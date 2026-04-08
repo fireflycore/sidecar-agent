@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -26,13 +27,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// 创建信号上下文，统一接收退出信号。
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
 	// 启动所有模块。
 	if err := runner.Start(ctx); err != nil {
 		log.Fatal(err)
 	}
+	go func() {
+		<-signals
+		cancel()
+		<-signals
+		os.Exit(1)
+	}()
 	// 阻塞等待关闭。
 	if err := runner.WaitForShutdown(ctx); err != nil {
 		log.Fatal(err)
