@@ -36,11 +36,11 @@ docker compose up --build -d
 
 ### 说明
 
-- sidecar-agent 通过 `host.docker.internal` 访问外部 `consul`
-- sidecar-agent 通过 `host.docker.internal` 访问外部 `envoy admin`
-- telemetry 默认不依赖外部 OTLP
+- sidecar-agent 通过 `192.168.1.100:18500` 访问外部 `consul`
+- sidecar-agent 通过 `192.168.1.100:18503` 访问外部 `envoy admin`
+- telemetry 默认指向外部 `OTLP HTTP` 地址 `192.168.1.100:4318`
 - sidecar-agent 会为每个实例注册 agent ownership TTL，确保 agent 失效后实例最终退出 Consul
-- 若生产环境不跑在 Docker Desktop，需要把 `host.docker.internal` 替换成实际外部地址
+- 若外部基础设施地址变化，需要同步修改 `sidecar-agent.minimal.yaml`
 
 ## 二、标准版
 
@@ -134,8 +134,8 @@ docker compose -f docker-compose.full.yml up --build -d
 
 ### 最小版
 
-- `consul.address = host.docker.internal:8500`
-- `envoy.admin_address = host.docker.internal:19000`
+- `consul.address = 192.168.1.100:18500`
+- `envoy.admin_address = 192.168.1.100:18503`
 - `consul.agent_lease_ttl = 10s`
 - `consul.agent_lease_refresh_interval = 3s`
 - `consul.deregister_critical_service_after = 30s`
