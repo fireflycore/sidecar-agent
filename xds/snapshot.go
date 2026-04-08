@@ -130,15 +130,15 @@ func (b *Builder) Build(instances []model.ServiceInstance) (*cachev3.Snapshot, S
 		// 收集服务名，供调试摘要展示。
 		serviceNames = append(serviceNames, fmt.Sprintf("%s.%s", serviceGroup.Name, serviceGroup.Namespace))
 	}
-	// listener 始终只有一个，负责接住本机所有流量。
-	listener, err := b.buildListener()
-	if err != nil {
-		return nil, Summary{}, err
-	}
 	// route config 统一承载所有服务的 authority 路由。
 	routeConfig := &routepb.RouteConfiguration{
 		Name:         b.settings.RouteName,
 		VirtualHosts: virtualHosts,
+	}
+	// listener 始终只有一个，负责接住本机所有流量。
+	listener, err := b.buildListener()
+	if err != nil {
+		return nil, Summary{}, err
 	}
 	// 生成下一版快照版本。
 	version := b.version.Add(1)
