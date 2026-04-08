@@ -1,7 +1,7 @@
 env: prod
 cluster_name: cluster-a
 zone: idc-a-1
-host_ip: 127.0.0.1
+host_ip: 192.168.1.50
 
 dns:
   listen_address: 0.0.0.0:15353
@@ -15,7 +15,7 @@ discovery:
   debounce_interval: 1s
 
 consul:
-  address: host.docker.internal:8500
+  address: 192.168.1.100:18500
   scheme: http
   datacenter: dc1
   route_kv_prefix: routes
@@ -25,7 +25,7 @@ consul:
 
 xds:
   listen_address: 0.0.0.0:15011
-  node_id: sidecar-agent-minimal-node
+  node_id: sidecar-agent-compose-node
   listener_address: 0.0.0.0:15001
   route_name: local-route
   default_timeout: 3s
@@ -42,7 +42,7 @@ envoy:
   enabled: false
   binary_path: /usr/local/bin/envoy
   bootstrap_path: /etc/firefly/sidecar-agent/envoy-bootstrap.yaml
-  admin_address: host.docker.internal:19000
+  admin_address: 192.168.1.100:18503
   drain_timeout: 20s
   restart_backoff: 3s
   log_level: info
