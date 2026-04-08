@@ -6,8 +6,6 @@ services:
     command:
       - --config
       - /etc/firefly/sidecar-agent/sidecar-agent.minimal.yaml
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "15010:15010"
       - "15011:15011"

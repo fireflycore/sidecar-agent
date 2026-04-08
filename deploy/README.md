@@ -39,7 +39,7 @@ docker compose up --build -d
 - sidecar-agent 通过 `192.168.1.100:18500` 访问外部 `consul`
 - sidecar-agent 通过 `192.168.1.100:18503` 访问外部 `envoy admin`
 - sidecar-agent 对外部 Consul 的 HTTP 请求默认使用 `3s` 超时，避免退出阶段长时间卡住
-- telemetry 默认指向外部 `OTLP HTTP` 地址 `192.168.1.100:4318`
+- telemetry 默认指向 `host.docker.internal:4318`，若你的 OTel Collector 也部署在 `192.168.1.100`，需要同步修改为对应地址
 - sidecar-agent 会为每个实例注册 agent ownership TTL，确保 agent 失效后实例最终退出 Consul
 - 若外部基础设施地址变化，需要同步修改 `sidecar-agent.minimal.yaml`
 
@@ -67,6 +67,7 @@ docker compose -f docker-compose.standard.yml up --build -d
 
 - 该模式会启动单节点 Consul
 - 该模式会启动单个 Envoy
+- Envoy 使用静态 `15001` listener，路由与上游仍通过 sidecar-agent 的 `RDS/CDS` 动态下发
 - 不会额外启动 OTel Collector 与 Prometheus
 - 若你的环境已有外部观测容器，可继续把 sidecar-agent 的 telemetry 指向外部地址
 
@@ -116,11 +117,17 @@ docker compose -f docker-compose.full.yml up --build -d
   - 数据入口
 - `19000`
   - admin
+- 外挂端口映射
+  - `18502 -> 15001`
+  - `18503 -> 19000`
 
 ### Consul
 
 - `8500`
   - HTTP API / UI
+- 外挂端口映射
+  - `18500 -> 8500`
+  - `18501 -> 8502`
 
 ### OTel / Prometheus
 
@@ -138,6 +145,7 @@ docker compose -f docker-compose.full.yml up --build -d
 - `consul.address = 192.168.1.100:18500`
 - `consul.request_timeout = 3s`
 - `envoy.admin_address = 192.168.1.100:18503`
+- `telemetry.otlp_endpoint = http://host.docker.internal:4318`
 - `consul.agent_lease_ttl = 10s`
 - `consul.agent_lease_refresh_interval = 3s`
 - `consul.deregister_critical_service_after = 30s`
@@ -147,21 +155,27 @@ docker compose -f docker-compose.full.yml up --build -d
 ### 标准版
 
 - `consul.address = consul:8500`
+- `consul.request_timeout = 3s`
+- `xds.node_id = sidecar-agent-compose-node`
 - `envoy.admin_address = envoy:19000`
 - `consul.agent_lease_ttl = 10s`
 - `consul.agent_lease_refresh_interval = 3s`
 - `consul.deregister_critical_service_after = 30s`
 - `telemetry` 默认仍不强绑本地 OTel Collector
+- Envoy bootstrap 使用静态 `local-listener`，`local-route` 通过 RDS 动态更新
 
 ### 完整版
 
 - `consul.address = consul:8500`
+- `consul.request_timeout = 3s`
+- `xds.node_id = sidecar-agent-compose-node`
 - `envoy.admin_address = envoy:19000`
 - `consul.agent_lease_ttl = 10s`
 - `consul.agent_lease_refresh_interval = 3s`
 - `consul.deregister_critical_service_after = 30s`
 - `telemetry.otlp_endpoint = http://otel-collector:4318`
 - `trace/log/metric` 均走 OTLP
+- Envoy bootstrap 使用静态 `local-listener`，`local-route` 通过 RDS 动态更新
 
 ## systemd 样例
 
