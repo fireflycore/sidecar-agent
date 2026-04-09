@@ -127,13 +127,20 @@
 
 已实现：
 
-- `go-micro/registry/agent` 包骨架
+- `go-micro/registry/agent` 作为正式裸机 sidecar-agent 接入库
 - 统一 `RegisterRequest / DrainRequest / DeregisterRequest`
+- `ServiceRegistration / ServiceOptions / ServiceNode` 等正式模型
 - 业务侧 `Controller`
 - 本地连接事件 `Runner`
 - 本地 HTTP JSON client
 - `/watch` 长连接事件源
 - 连接恢复后自动重放 `register` 的最小运行时骨架
+
+说明：
+
+- `go-micro/registry` 根目录下的旧 `Register / Discovery / ServiceNode` 代码已移除
+- 裸机业务服务后续统一接入 `go-micro/registry/agent`
+- 外部仓库批量迁移可参考 `go-micro/registry/MIGRATION.md`
 
 ## 未实现内容
 
