@@ -140,7 +140,7 @@
 
 - `go-micro/registry` 根目录下的旧 `Register / Discovery / ServiceNode` 代码已移除
 - 裸机业务服务后续统一接入 `go-consul/agent`
-- 外部仓库批量迁移可参考 `go-micro/registry/MIGRATION.md`
+- 外部仓库批量迁移可参考 `design/registry/README.md` 中的迁移速查
 
 ## 未实现内容
 
