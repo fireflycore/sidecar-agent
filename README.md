@@ -22,7 +22,7 @@
   - 统一装配配置、DNS、Registry、Discovery、xDS、Admin API、Telemetry
 - `config`
   - 配置模型、默认值、配置校验
-- `adminapi`
+- `admin`
   - 本地管理接口
 - `registry`
   - Consul 注册、摘流、注销、发现、路由文档写入

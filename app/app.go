@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fireflycore/sidecar-agent/adminapi"
+	"github.com/fireflycore/sidecar-agent/admin"
 	"github.com/fireflycore/sidecar-agent/config"
 	"github.com/fireflycore/sidecar-agent/discovery"
 	"github.com/fireflycore/sidecar-agent/dns"
@@ -37,7 +37,7 @@ type Runner struct {
 	// xdsServer 负责向共享 Envoy 下发快照。
 	xdsServer *xds.Server
 	// adminServer 负责暴露管理接口。
-	adminServer *adminapi.Server
+	adminServer *admin.Server
 	// envoyManager 负责共享 Envoy 生命周期。
 	envoyManager *envoy.Manager
 	// publishMu 防止主动刷新与后台轮询同时构建快照。
@@ -124,7 +124,7 @@ func New(cfg config.Config) (*Runner, error) {
 		xdsServer:      xdsServer,
 	}
 	// 创建管理接口服务。
-	runner.adminServer = adminapi.New(
+	runner.adminServer = admin.New(
 		cfg.Admin.ListenAddress,
 		registryClient,
 		runner,

@@ -1,4 +1,4 @@
-package adminapi
+package admin
 
 import (
 	"context"
@@ -117,7 +117,7 @@ func (s *Server) RefreshNow(ctx context.Context) error {
 // handleRegister 处理本地服务启动登记。
 func (s *Server) handleRegister(writer http.ResponseWriter, request *http.Request) {
 	// 为注册请求创建一段管理面 span，便于串起后续注册与刷新流程。
-	ctx, span := otel.Tracer("sidecar-agent/adminapi").Start(request.Context(), "admin.register")
+	ctx, span := otel.Tracer("sidecar-agent/admin").Start(request.Context(), "admin.register")
 	defer span.End()
 	// 解码 JSON 请求体。
 	var payload model.RegisterRequest
@@ -154,7 +154,7 @@ func (s *Server) handleRegister(writer http.ResponseWriter, request *http.Reques
 // handleDrain 处理优雅摘流请求。
 func (s *Server) handleDrain(writer http.ResponseWriter, request *http.Request) {
 	// 为摘流请求创建 span，便于和注册中心维护模式联动观察。
-	ctx, span := otel.Tracer("sidecar-agent/adminapi").Start(request.Context(), "admin.drain")
+	ctx, span := otel.Tracer("sidecar-agent/admin").Start(request.Context(), "admin.drain")
 	defer span.End()
 	// 解码 JSON 请求体。
 	var payload model.DrainRequest
@@ -191,7 +191,7 @@ func (s *Server) handleDrain(writer http.ResponseWriter, request *http.Request) 
 // handleDeregister 处理强制注销请求。
 func (s *Server) handleDeregister(writer http.ResponseWriter, request *http.Request) {
 	// 为注销请求创建 span，便于观察生命周期最后一步。
-	ctx, span := otel.Tracer("sidecar-agent/adminapi").Start(request.Context(), "admin.deregister")
+	ctx, span := otel.Tracer("sidecar-agent/admin").Start(request.Context(), "admin.deregister")
 	defer span.End()
 	// 解码 JSON 请求体。
 	var payload model.DeregisterRequest
